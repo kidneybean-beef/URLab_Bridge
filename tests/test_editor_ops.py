@@ -819,6 +819,70 @@ def test_add_quick_convert_request_shape(mock_step_server, base_handshake):
     assert req["friction"] == [1.0, 1.0, 1.0]
 
 
+def test_add_quick_convert_many_request_shape_and_result(
+    mock_step_server, base_handshake
+):
+    from urlab_client import QuickConvertBatchResult
+
+    client = _make_client(mock_step_server.port)
+    try:
+        _open_session(client, mock_step_server, base_handshake)
+        mock_step_server.replies.append(wr.add_quick_convert_many_ok(
+            requested=2,
+            converted=1,
+            failed=1,
+            requires_pie_restart=False,
+            results=[
+                {
+                    "target": "Cube_1",
+                    "ok": True,
+                    "actor_name": "StaticMeshActor_1",
+                },
+                {
+                    "target": "Missing",
+                    "ok": False,
+                    "error": "no actor matching 'Missing'",
+                },
+            ],
+        ))
+        result = client.outliner.add_quick_convert_many([
+            {
+                "target": "Cube_1",
+                "by_name": True,
+                "static": True,
+                "complex_mesh": False,
+                "coacd_threshold": 0.05,
+                "driven_by_unreal": False,
+                "friction": (0.5, 0.005, 0.0001),
+            },
+            {
+                "target": "Missing",
+                "by_name": True,
+                "static": True,
+                "complex_mesh": False,
+                "coacd_threshold": 0.05,
+                "driven_by_unreal": False,
+                "friction": (1.0, 1.0, 1.0),
+            },
+        ])
+    finally:
+        client.close()
+
+    assert isinstance(result, QuickConvertBatchResult)
+    assert result.requested == 2
+    assert result.converted == 1
+    assert result.failed == 1
+    assert result.results[0].ok is True
+    assert result.results[1].error == "no actor matching 'Missing'"
+
+    req = mock_step_server.received[-1]
+    assert req["op"] == "add_quick_convert_many"
+    assert req["items"][0]["target"] == "Cube_1"
+    assert req["items"][0]["target_by"] == "actor_name"
+    assert "by_name" not in req["items"][0]
+    assert req["items"][0]["friction"] == [0.5, 0.005, 0.0001]
+
+
 def test_list_blueprints_returns_bp_list(mock_step_server, base_handshake):
     from urlab_client import BlueprintInfo
 

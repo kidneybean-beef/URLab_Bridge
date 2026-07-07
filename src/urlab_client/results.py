@@ -297,6 +297,44 @@ def _blueprint_info_from_wire(b: Mapping[str, Any]) -> BlueprintInfo:
 
 
 @dataclass
+class QuickConvertBatchItemResult:
+    target: str
+    ok: bool
+    actor_name: str = ""
+    error: str = ""
+
+
+@dataclass
+class QuickConvertBatchResult:
+    requested: int
+    converted: int
+    failed: int
+    requires_pie_restart: bool = False
+    results: List[QuickConvertBatchItemResult] = field(default_factory=list)
+
+
+def _quick_convert_batch_result_from_wire(
+    r: Mapping[str, Any],
+) -> QuickConvertBatchResult:
+    items = []
+    for item in r.get("results") or []:
+        item = item or {}
+        items.append(QuickConvertBatchItemResult(
+            target=str(item.get("target", "") or ""),
+            ok=bool(item.get("ok", False)),
+            actor_name=str(item.get("actor_name", "") or ""),
+            error=str(item.get("error", "") or ""),
+        ))
+    return QuickConvertBatchResult(
+        requested=int(r.get("requested", 0) or 0),
+        converted=int(r.get("converted", 0) or 0),
+        failed=int(r.get("failed", 0) or 0),
+        requires_pie_restart=bool(r.get("requires_pie_restart", False)),
+        results=items,
+    )
+
+
+@dataclass
 class ActorBounds:
     """AABB of an actor's components, MJ metres."""
 

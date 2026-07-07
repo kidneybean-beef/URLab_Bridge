@@ -217,6 +217,10 @@ def add_quick_convert_ok(*, target: str = "", **extra: Any) -> Dict[str, Any]:
     return {"op": "add_quick_convert_ok", "target": target, **extra}
 
 
+def add_quick_convert_many_ok(**extra: Any) -> Dict[str, Any]:
+    return {"op": "add_quick_convert_many_ok", **extra}
+
+
 def remove_quick_convert_ok(*, target: str = "", **extra: Any) -> Dict[str, Any]:
     return {"op": "remove_quick_convert_ok", "target": target, **extra}
 

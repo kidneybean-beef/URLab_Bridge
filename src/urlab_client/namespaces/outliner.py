@@ -24,9 +24,11 @@ from ..results import (
     ActorBounds,
     ActorInfo,
     BlueprintInfo,
+    QuickConvertBatchResult,
     _actor_bounds_from_wire,
     _actor_info_from_wire,
     _blueprint_info_from_wire,
+    _quick_convert_batch_result_from_wire,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing-only
@@ -121,6 +123,34 @@ class _OutlinerNamespace(_RpcNamespace):
             "add_quick_convert", payload,
             expected_op="add_quick_convert_ok",
         )
+
+    def add_quick_convert_many(
+        self,
+        items: Sequence[Dict[str, Any]],
+    ) -> QuickConvertBatchResult:
+        payload_items = []
+        for item in items:
+            target = str(item["target"])
+            target_by = str(item.get("target_by") or "")
+            by_name = (
+                bool(item.get("by_name", False))
+                or target_by.lower() == "actor_name"
+            )
+            payload_items.append({
+                "target": target,
+                "target_by": "actor_name" if by_name else "actor_id",
+                "static": bool(item.get("static", False)),
+                "complex_mesh": bool(item.get("complex_mesh", False)),
+                "coacd_threshold": float(item.get("coacd_threshold", 0.05)),
+                "driven_by_unreal": bool(item.get("driven_by_unreal", False)),
+                "friction": [float(x) for x in item.get("friction", (1.0, 1.0, 1.0))],
+            })
+        reply = self._client._rpc(
+            "add_quick_convert_many",
+            {"items": payload_items},
+            expected_op="add_quick_convert_many_ok",
+        )
+        return _quick_convert_batch_result_from_wire(reply)
 
     def remove_quick_convert(self, target: str, *, by_name: bool = False) -> None:
         self._client._rpc(
