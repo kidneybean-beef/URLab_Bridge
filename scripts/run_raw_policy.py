@@ -109,6 +109,8 @@ def main() -> int:
             f"multiple articulations available {list(client.articulations)}; "
             f"pass --articulation"
         )
+    client.runtime.set_control_source("zmq", articulation=prefix)
+    print(f"{prefix} control source set to ZMQ")
     art = client.articulations[prefix]
 
     joint_names = list(art.joints.keys())
