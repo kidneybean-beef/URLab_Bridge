@@ -113,3 +113,48 @@ Reason:
 - `policies/` contains local model artifacts.
 - `ue_import_mjcf_scene_with_physics.py` is an abandoned experiment and is not
   part of the QuickConvert/web-control path.
+
+## feat(control): Add Multi-Robot Command Hub Metrics
+
+Purpose: make the shared multi-Go2 web policy loop robust and measurable without
+adding batching, spawning, leasing, camera feedback, navigation, or UE plugin
+changes.
+
+Main files:
+
+- `src/urlab_bridge/control_server/commands.py`
+- `src/urlab_bridge/control_server/metrics.py`
+- `src/urlab_bridge/control_server/go2_moe.py`
+- `src/urlab_bridge/control_server/web_gateway.py`
+- `src/urlab_bridge/control_server/server.py`
+- `src/urlab_bridge/web_control.py`
+- `scripts/run_go2_moe_multi_web.py`
+- `tests/test_control_server_commands.py`
+- `tests/test_control_server_metrics.py`
+- `tests/test_go2_moe_multi_web.py`
+- `tests/test_web_control.py`
+
+Developer notes:
+
+- `CommandHub` owns per-robot command state and keeps stale braking isolated to
+  the robot whose browser stopped sending commands.
+- `RobotCommandPort` adapts the command hub to the existing web command-source
+  interface used by `WebGateway` and `Go2MoeControlLoop`.
+- `ControlLoopMetrics` records tick count, missed deadlines, policy duration,
+  UE step duration, max tick duration, active robot count, and per-robot command
+  summaries.
+- Each per-robot web server can expose the same global diagnostics through
+  `GET /metrics`.
+- `run_go2_moe_multi_web.py` now accepts `--metrics-log-interval-s`; use `0` to
+  disable periodic metric logs.
+
+Verification:
+
+```text
+/home/xin/app/miniconda3/envs/urlab/bin/python -m py_compile ...
+/home/xin/app/miniconda3/envs/urlab/bin/python -m pytest ...
+```
+
+The focused pytest set covers command hub behavior, metrics serialization,
+multi-web integration, web handler metrics, and existing Go2 web/keyboard
+regressions.

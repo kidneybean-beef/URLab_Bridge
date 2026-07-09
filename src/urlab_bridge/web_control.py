@@ -337,7 +337,11 @@ class WebCommandSource:
         }
 
 
-def make_handler(broker: WebControlBroker) -> type[BaseHTTPRequestHandler]:
+def make_handler(
+    broker: WebControlBroker,
+    *,
+    metrics_provider: Callable[[], Mapping[str, Any]] | object | None = None,
+) -> type[BaseHTTPRequestHandler]:
     class WebControlHandler(BaseHTTPRequestHandler):
         server_version = "URLabWebControl/0.1"
 
@@ -346,6 +350,8 @@ def make_handler(broker: WebControlBroker) -> type[BaseHTTPRequestHandler]:
                 self._send_html(_INDEX_HTML)
             elif self.path == "/health":
                 self._send_json(200, broker.status())
+            elif self.path == "/metrics" and metrics_provider is not None:
+                self._send_json(200, _metrics_payload(metrics_provider))
             else:
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -404,6 +410,17 @@ def make_handler(broker: WebControlBroker) -> type[BaseHTTPRequestHandler]:
             self.wfile.write(data)
 
     return WebControlHandler
+
+
+def _metrics_payload(provider: Callable[[], Mapping[str, Any]] | object) -> Mapping[str, Any]:
+    if callable(provider):
+        payload = provider()
+    else:
+        snapshot = getattr(provider, "snapshot", None)
+        payload = snapshot() if callable(snapshot) else provider
+    if not isinstance(payload, Mapping):
+        raise ValueError("metrics provider must return a JSON object")
+    return payload
 
 
 def run_server(

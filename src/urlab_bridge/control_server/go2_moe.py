@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from .metrics import ControlLoopMetrics
 from .models import WebPolicyTarget
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,9 @@ class Go2MoeControlLoop:
         limit_mode: Any,
         dependencies: Go2MoeDependencies,
         *,
+        metrics: ControlLoopMetrics | None = None,
+        metrics_log_interval_s: float | None = None,
+        clock: Callable[[], float] = time.perf_counter,
         log: logging.Logger = logger,
     ) -> None:
         if not target_sources:
@@ -85,7 +89,15 @@ class Go2MoeControlLoop:
         self.target_sources = list(target_sources)
         self.limit_mode = limit_mode
         self.dependencies = dependencies
+        self.metrics = metrics or ControlLoopMetrics(freq_hz=float(args.freq))
+        self.metrics_log_interval_s = (
+            float(metrics_log_interval_s)
+            if metrics_log_interval_s is not None
+            else float(getattr(args, "metrics_log_interval_s", 1.0))
+        )
+        self._clock = clock
         self._logger = log
+        self._last_metrics_log_at: float | None = None
 
     def run(self, client: Any) -> int:
         deps = self.dependencies
@@ -301,21 +313,27 @@ class Go2MoeControlLoop:
         deadline = (
             None
             if float(self.args.duration) <= 0.0
-            else time.perf_counter() + float(self.args.duration)
+            else self._clock() + float(self.args.duration)
         )
         while not should_stop() and not _any_quit_requested(states):
-            if deadline is not None and time.perf_counter() >= deadline:
+            if deadline is not None and self._clock() >= deadline:
                 break
 
+            tick_start = self._clock()
+            policy_start = self._clock()
             for state in states:
                 self._compute_and_stage_state(client, state)
+            policy_duration_s = max(0.0, self._clock() - policy_start)
 
+            step_start = self._clock()
             client.step(
                 n_steps=1,
                 observations="standard",
                 target_hz=self.args.freq,
                 control_articulations=prefixes,
             )
+            step_duration_s = max(0.0, self._clock() - step_start)
+            tick_duration_s = max(0.0, self._clock() - tick_start)
             iters += 1
 
             for state in states:
@@ -326,6 +344,18 @@ class Go2MoeControlLoop:
                 state.pending_previous_target = None
                 state.pending_last_action = None
                 state.iters += 1
+
+            command_statuses = _command_statuses_by_prefix(states)
+            self.metrics.record_tick(
+                tick_duration_s=tick_duration_s,
+                policy_duration_s=policy_duration_s,
+                step_duration_s=step_duration_s,
+                active_robot_count=sum(
+                    1 for status in command_statuses.values() if status.get("active")
+                ),
+                command_statuses=command_statuses,
+            )
+            self._maybe_log_metrics()
 
             if iters == 1 or iters % max(1, int(self.args.freq)) == 0:
                 self._logger.info(
@@ -338,6 +368,33 @@ class Go2MoeControlLoop:
                     },
                 )
         return iters
+
+    def _maybe_log_metrics(self) -> None:
+        if self.metrics_log_interval_s <= 0.0:
+            return
+        now = self._clock()
+        if (
+            self._last_metrics_log_at is not None
+            and (now - self._last_metrics_log_at) < self.metrics_log_interval_s
+        ):
+            return
+        self._last_metrics_log_at = now
+        snapshot = self.metrics.snapshot()
+        ages = {
+            name: robot.get("last_command_age_s")
+            for name, robot in snapshot.get("robots", {}).items()
+        }
+        self._logger.info(
+            "metrics: tick=%d missed=%d tick_ms=%.2f policy_ms=%.2f "
+            "step_ms=%.2f active=%d command_age_s=%s",
+            snapshot["tick_count"],
+            snapshot["missed_deadlines"],
+            snapshot["last_tick_duration_s"] * 1000.0,
+            snapshot["last_policy_duration_s"] * 1000.0,
+            snapshot["last_step_duration_s"] * 1000.0,
+            snapshot["active_robot_count"],
+            ages,
+        )
 
     def _compute_and_stage_state(self, client: Any, state: _PolicyState) -> None:
         deps = self.dependencies
@@ -357,6 +414,9 @@ class Go2MoeControlLoop:
         if reason is not None:
             raise SystemExit(f"{state.prefix} safety abort: {reason}")
 
+        stop_if_stale = getattr(state.command_source, "stop_if_stale", None)
+        if callable(stop_if_stale):
+            stop_if_stale()
         sync_runtime_ui(state.command_source, client, state.prefix)
         command = state.command_source.poll()
         obs = build_observation(
@@ -446,3 +506,23 @@ def _any_quit_requested(states: list[_PolicyState]) -> bool:
         bool(getattr(state.command_source, "quit_requested", False))
         for state in states
     )
+
+
+def _command_statuses_by_prefix(states: list[_PolicyState]) -> dict[str, dict[str, Any]]:
+    statuses: dict[str, dict[str, Any]] = {}
+    for state in states:
+        status_fn = getattr(state.command_source, "status", None)
+        if callable(status_fn):
+            status = dict(status_fn())
+        else:
+            status = {
+                "articulation": state.prefix,
+                "active": False,
+                "stale": False,
+                "last_command_age_s": None,
+                "twist": [0.0, 0.0, 0.0],
+            }
+        if not status.get("articulation"):
+            status["articulation"] = state.prefix
+        statuses[state.prefix] = status
+    return statuses

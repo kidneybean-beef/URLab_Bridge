@@ -6,8 +6,9 @@ from collections.abc import Callable, Sequence
 from http.server import ThreadingHTTPServer
 from typing import Any
 
-from urlab_bridge.web_control import WebCommandSource, make_handler
+from urlab_bridge.web_control import make_handler
 
+from .commands import CommandHub
 from .models import WebPolicyTarget
 
 logger = logging.getLogger(__name__)
@@ -22,15 +23,16 @@ class _WebServerHandle:
         command_source: Any,
         stale_timeout_s: float,
         server_factory: Callable[..., Any],
-        handler_factory: Callable[[Any], Any],
+        handler_factory: Callable[..., Any],
         thread_factory: Callable[..., Any],
         event_factory: Callable[[], Any],
+        metrics_provider: Callable[[], Any] | object | None,
     ) -> None:
         self.target = target
         self.command_source = command_source
         self.server = server_factory(
             (bind, int(target.port)),
-            handler_factory(command_source),
+            handler_factory(command_source, metrics_provider=metrics_provider),
         )
         self._stop_event = event_factory()
         interval_s = max(
@@ -69,9 +71,12 @@ class WebGateway:
         bind: str,
         web_config: Any,
         stale_timeout_s: float,
-        command_source_factory: Callable[..., Any] = WebCommandSource,
+        command_hub: CommandHub | None = None,
+        command_hub_factory: Callable[..., CommandHub] = CommandHub,
+        command_source_factory: Callable[..., Any] | None = None,
+        metrics_provider: Callable[[], Any] | object | None = None,
         server_factory: Callable[..., Any] = ThreadingHTTPServer,
-        handler_factory: Callable[[Any], Any] = make_handler,
+        handler_factory: Callable[..., Any] = make_handler,
         thread_factory: Callable[..., Any] = threading.Thread,
         event_factory: Callable[[], Any] = threading.Event,
         log: logging.Logger = logger,
@@ -80,7 +85,13 @@ class WebGateway:
         self.bind = bind
         self.web_config = web_config
         self.stale_timeout_s = float(stale_timeout_s)
+        self.command_hub = command_hub or command_hub_factory(
+            [target.articulation for target in self.targets],
+            config=self.web_config,
+            stale_timeout_s=self.stale_timeout_s,
+        )
         self._command_source_factory = command_source_factory
+        self._metrics_provider = metrics_provider
         self._server_factory = server_factory
         self._handler_factory = handler_factory
         self._thread_factory = thread_factory
@@ -101,10 +112,13 @@ class WebGateway:
         if self._handles:
             return
         for target in self.targets:
-            command_source = self._command_source_factory(
-                config=self.web_config,
-                stale_timeout_s=self.stale_timeout_s,
-            )
+            if self._command_source_factory is None:
+                command_source = self.command_hub.port(target.articulation, source="web")
+            else:
+                command_source = self._command_source_factory(
+                    config=self.web_config,
+                    stale_timeout_s=self.stale_timeout_s,
+                )
             handle = _WebServerHandle(
                 bind=self.bind,
                 target=target,
@@ -114,6 +128,7 @@ class WebGateway:
                 handler_factory=self._handler_factory,
                 thread_factory=self._thread_factory,
                 event_factory=self._event_factory,
+                metrics_provider=self._metrics_provider,
             )
             self._target_sources.append((target, command_source))
             self._handles.append(handle)

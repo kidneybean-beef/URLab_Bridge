@@ -6,6 +6,8 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from .go2_moe import Go2MoeControlLoop, Go2MoeDependencies
+from .commands import CommandHub
+from .metrics import ControlLoopMetrics
 from .models import WebPolicyTarget
 from .session import SessionManager
 from .web_gateway import WebGateway
@@ -43,11 +45,19 @@ class URLabControlServer:
             step_port=self.args.step_port,
             state_port=self.args.state_port,
         )
+        command_hub = CommandHub(
+            [target.articulation for target in self.targets],
+            config=self.web_config,
+            stale_timeout_s=self.args.web_stale_timeout_s,
+        )
+        metrics = ControlLoopMetrics(freq_hz=self.args.freq)
         gateway = self._web_gateway_factory(
             targets=self.targets,
             bind=self.args.web_bind,
             web_config=self.web_config,
             stale_timeout_s=self.args.web_stale_timeout_s,
+            command_hub=command_hub,
+            metrics_provider=metrics.snapshot,
             log=self._logger,
         )
         try:
@@ -58,6 +68,12 @@ class URLabControlServer:
                 gateway.target_sources,
                 self.limit_mode,
                 self.dependencies,
+                metrics=metrics,
+                metrics_log_interval_s=getattr(
+                    self.args,
+                    "metrics_log_interval_s",
+                    1.0,
+                ),
                 log=self._logger,
             )
             return loop.run(client)

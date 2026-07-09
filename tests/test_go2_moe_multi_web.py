@@ -12,10 +12,12 @@ from urlab_bridge.control_server import (
     WebGateway,
     WebPolicyTarget,
 )
+from urlab_bridge.control_server.commands import CommandHub, RobotCommandPort
 from urlab_bridge.control_server.go2_moe import (
     Go2MoeControlLoop,
     Go2MoeDependencies,
 )
+from urlab_bridge.control_server.metrics import ControlLoopMetrics
 
 
 def _load_multi_web_script():
@@ -153,7 +155,11 @@ def test_web_gateway_starts_and_closes_one_server_per_target():
         stale_timeout_s=0.5,
         command_source_factory=FakeCommandSource,
         server_factory=FakeServer,
-        handler_factory=lambda source: ("handler", source),
+        handler_factory=lambda source, metrics_provider=None: (
+            "handler",
+            source,
+            metrics_provider,
+        ),
         thread_factory=FakeThread,
         event_factory=FakeEvent,
     )
@@ -174,6 +180,75 @@ def test_web_gateway_starts_and_closes_one_server_per_target():
     assert all(server.shutdown_called for server in FakeServer.instances)
     assert all(server.server_close_called for server in FakeServer.instances)
     assert all(source.closed for _target, source in gateway.target_sources)
+
+
+def test_web_gateway_creates_robot_command_ports_backed_by_one_hub():
+    class FakeServer:
+        def __init__(self, address, handler) -> None:
+            self.address = address
+            self.handler = handler
+
+        def serve_forever(self) -> None:
+            pass
+
+        def shutdown(self) -> None:
+            pass
+
+        def server_close(self) -> None:
+            pass
+
+    class FakeThread:
+        def __init__(self, *, target, daemon) -> None:
+            self.target = target
+            self.daemon = daemon
+
+        def start(self) -> None:
+            pass
+
+        def join(self, timeout=None) -> None:
+            pass
+
+    class FakeEvent:
+        def wait(self, _interval) -> bool:
+            return True
+
+        def set(self) -> None:
+            pass
+
+    targets = [
+        WebPolicyTarget("dog_a", 8099),
+        WebPolicyTarget("dog_b", 8100),
+    ]
+    hub = CommandHub([target.articulation for target in targets])
+    metrics = ControlLoopMetrics(freq_hz=50.0)
+    gateway = WebGateway(
+        targets=targets,
+        bind="127.0.0.1",
+        web_config=object(),
+        stale_timeout_s=0.5,
+        command_hub=hub,
+        metrics_provider=metrics.snapshot,
+        server_factory=FakeServer,
+        handler_factory=lambda source, metrics_provider=None: (
+            "handler",
+            source,
+            metrics_provider,
+        ),
+        thread_factory=FakeThread,
+        event_factory=FakeEvent,
+    )
+
+    gateway.start()
+
+    sources = [source for _target, source in gateway.target_sources]
+    assert all(isinstance(source, RobotCommandPort) for source in sources)
+    assert sources[0].hub is hub
+    assert sources[1].hub is hub
+
+    sources[0].apply_control({"keys": {"w": True}})
+
+    assert sources[0].poll() == pytest.approx((1.0, 0.0, 0.0))
+    assert sources[1].poll() == pytest.approx((0.0, 0.0, 0.0))
 
 
 def test_session_manager_constructs_one_client_and_closes():
@@ -351,3 +426,129 @@ def test_multi_web_policy_uses_one_client_and_steps_selected_articulations(monke
     )
     assert sources[0].synced_articulations == ["dog_a", "dog_a"]
     assert sources[1].synced_articulations == ["dog_b", "dog_b"]
+
+
+def test_multi_web_policy_records_control_loop_metrics(monkeypatch):
+    mod = _load_multi_web_script()
+
+    class FakeRuntime:
+        def __init__(self) -> None:
+            self.control_sources: list[tuple[str, str]] = []
+
+        def set_control_source(self, source: str, *, articulation: str) -> None:
+            self.control_sources.append((source, articulation))
+
+    class FakeArt:
+        joints = ["joint"]
+        actuators = ["actuator"]
+        has_free_base = True
+        root_pos_w = [0.0, 0.0, 0.3]
+
+        def __init__(self) -> None:
+            self.ctrl_targets: list[object] = []
+
+        def set_ctrl(self, pose: object) -> None:
+            self.ctrl_targets.append(pose)
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.runtime = FakeRuntime()
+            self.articulations = {"dog_a": FakeArt(), "dog_b": FakeArt()}
+            self.sim_time = 0.0
+            self.step_calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        def step(self, *args, **kwargs) -> None:
+            self.step_calls.append((args, kwargs))
+
+    class OneTickCommandSource:
+        def __init__(self, command) -> None:
+            self.command = command
+            self.poll_count = 0
+            self.released = False
+
+        @property
+        def quit_requested(self) -> bool:
+            return self.poll_count >= 2
+
+        def poll(self):
+            self.poll_count += 1
+            return self.command
+
+        def status(self) -> dict:
+            return {
+                "articulation": "",
+                "source": "web",
+                "active": any(self.command),
+                "stale": False,
+                "last_command_age_s": 0.05,
+                "twist": list(self.command),
+            }
+
+        def stop_if_stale(self) -> bool:
+            return False
+
+        def sync_runtime_ui(self, runtime: object, articulation: str) -> bool:
+            return True
+
+        def release(self) -> None:
+            self.released = True
+
+    args = mod.build_arg_parser().parse_args([
+        "--web-target",
+        "dog_a:8099",
+        "--web-target",
+        "dog_b:8100",
+    ])
+    sources = [
+        OneTickCommandSource((1.0, 0.0, 0.0)),
+        OneTickCommandSource((0.0, 0.0, 0.0)),
+    ]
+    metrics = ControlLoopMetrics(freq_hz=args.freq)
+    deps = Go2MoeDependencies(
+        select_articulation=lambda _client, name: name,
+        format_pose_sample=lambda pose: pose,
+        push_gains=lambda *args, **kwargs: 0,
+        resolve_torque_limits=lambda value: [1.0],
+        sync_command_source_runtime_ui=lambda source, _client, prefix: source.sync_runtime_ui(
+            _client.runtime,
+            prefix,
+        ),
+        build_compatibility_report=lambda *args, **kwargs: SimpleNamespace(
+            model_ok=True,
+            stand_ready=True,
+            summary=lambda: "ok",
+        ),
+        format_compatibility_report=lambda report: "",
+        safety_abort_reason=lambda *args, **kwargs: None,
+        capture_actuated_joint_pose=lambda art: {"joint": 0.0},
+        validate_target_pose=lambda pose: None,
+        load_policy=lambda *args, **kwargs: object(),
+        build_observation=lambda *args, **kwargs: [0.0],
+        reset_history=lambda *args, **kwargs: None,
+        infer_action=lambda *args, **kwargs: (
+            [0.0],
+            SimpleNamespace(expert_weights=[0.0]),
+        ),
+        action_abort_reason=lambda *args, **kwargs: None,
+        apply_action_limit=lambda action, **kwargs: (action, False),
+        action_to_target_pose=lambda art, action: {"joint": 0.0},
+        maybe_rate_limit_target_pose=lambda previous, desired, **kwargs: desired,
+        target_pose_to_action=lambda target: [0.0],
+        target_delta_abs_max=lambda previous, target: 0.0,
+        signal_handler=lambda *args, **kwargs: None,
+    )
+
+    result = Go2MoeControlLoop(
+        args,
+        list(zip(mod.parse_web_targets(args), sources)),
+        mod.resolve_limit_mode(args),
+        deps,
+        metrics=metrics,
+        metrics_log_interval_s=0.0,
+    ).run(FakeClient())
+
+    snapshot = metrics.snapshot()
+    assert result == 0
+    assert snapshot["tick_count"] == 1
+    assert snapshot["active_robot_count"] == 1
+    assert set(snapshot["robots"]) == {"dog_a", "dog_b"}

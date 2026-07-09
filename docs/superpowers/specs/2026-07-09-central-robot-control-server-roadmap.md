@@ -18,15 +18,24 @@ URLabControlServer
   RobotRegistry
     tracks spawned robots, articulation names, control mode, health
 
+  CommandHub
+    stores per-robot desired commands, source ids, command age, brake state
+    gives all gateways one source-agnostic write path
+
   ControlLoop
     runs low-level locomotion at 50 Hz
+    reads desired commands from CommandHub
     batches policy inference by policy type when possible
     sends one shared client.step(... controlled articulations ...)
 
   WebGateway
     serves browser UI
     maps users/pages to robot controllers
-    handles leases, keyboard/buttons/joystick, stale timeout, brake
+    writes keyboard/buttons/joystick commands into CommandHub
+
+  Ros2Gateway
+    subscribes to ROS 2 command topics and writes commands into CommandHub
+    publishes URLab robot state, sensors, and cameras as ROS 2 topics
 
   PolicyRuntime
     keeps one controller state per robot
@@ -44,6 +53,12 @@ URLabControlServer
 URLab currently has one active UE RPC session. Running one independent policy script per robot causes the newest Python client to expire older sessions. A central server avoids `session_expired` by keeping one active `URLabClient` and routing all robot work through that session.
 
 The central server is also better for performance. It avoids duplicated state reads, duplicated RPC calls, duplicated policy loads, and competing control loops. It also allows later batching: robots using the same policy can share one loaded model and eventually run inference as a batch instead of many independent Python calls.
+
+The command path should be source-agnostic early. Web control, ROS 2,
+joystick input, navigation, and task logic should all write desired robot
+commands into the same per-robot command state instead of coupling the
+low-level control loop to a specific UI or middleware. This keeps the current
+web work useful when ROS 2 and navigation are added later.
 
 From the current Go2 MoE policy benchmark, the locomotion model is small:
 
@@ -104,6 +119,11 @@ Goal: make shared multi-robot stepping robust and measurable.
 
 Scope:
 - Per-robot controller state.
+- Per-robot source-agnostic command state.
+- A `CommandHub` or equivalent abstraction for latest desired command,
+  command source, command age, brake/release state, and stale timeout.
+- `WebGateway` writes commands into the shared command state instead of being
+  read directly by the low-level control loop.
 - One shared `client.step()` per control tick.
 - Per-robot stale-command braking.
 - Clean shutdown that restores UI control source.
@@ -118,6 +138,8 @@ Metrics to expose:
 - Per-robot command age.
 
 This milestone should answer whether N dogs can be controlled reliably at 50 Hz.
+It should also ensure that future ROS 2, joystick, and navigation gateways can
+feed the same command path without rewriting the policy loop.
 
 ### Milestone 3: Policy Runtime Optimization
 
@@ -132,7 +154,26 @@ Scope:
 
 This milestone is where GPU support should be introduced if needed, because batching makes GPU usage much more meaningful.
 
-### Milestone 4: Unified Web UI
+### Milestone 4: ROS 2 Gateway
+
+Goal: let ROS 2 stacks exchange commands, state, sensors, and cameras with the
+central control server without creating another competing URLab client.
+
+Scope:
+- Add an optional `Ros2Gateway` using `rclpy`.
+- Subscribe to standard command topics such as `/<robot>/cmd_vel`
+  (`geometry_msgs/Twist`) and write them into the shared command state.
+- Publish per-robot state topics such as `/<robot>/joint_states`, odometry or
+  base state, sensor topics, and camera topics where available.
+- Keep ROS 2 callbacks non-blocking relative to the 50 Hz locomotion loop.
+- Reuse the same robot registry and command ownership/brake semantics as the
+  web gateway.
+
+This milestone should not replace URLab's native ZMQ/Python client path. ROS 2
+is a gateway on top of the central server, so web control, ROS 2 teleop, and
+future autonomy feed the same command hub.
+
+### Milestone 5: Unified Web UI
 
 Goal: improve control convenience.
 
@@ -145,7 +186,7 @@ Scope:
 
 This milestone should move away from requiring one port per robot, while preserving the ability for different users to control different dogs from different browser pages.
 
-### Milestone 5: Leasing and Safety
+### Milestone 6: Leasing and Safety
 
 Goal: prevent users from fighting over the same robot and add stronger safety semantics.
 
@@ -159,7 +200,7 @@ Scope:
 
 This milestone should be completed before serious LAN or multi-user use.
 
-### Milestone 6: Spawning Integration
+### Milestone 7: Spawning Integration
 
 Goal: connect web control to robot creation and discovery.
 
@@ -172,7 +213,7 @@ Scope:
 
 This turns the server from controlling a fixed set of existing dogs into managing a robot fleet.
 
-### Milestone 7: Navigation Layer
+### Milestone 8: Navigation Layer
 
 Goal: add autonomy above locomotion.
 
@@ -185,7 +226,7 @@ Scope:
 
 Low-level locomotion should remain the 50 Hz layer. Navigation should not be embedded directly inside the locomotion policy loop.
 
-### Milestone 8: Perception and Camera Feedback
+### Milestone 9: Perception and Camera Feedback
 
 Goal: add richer remote operation without blocking control.
 
@@ -198,7 +239,7 @@ Scope:
 
 Camera and perception work must be separated from the low-level control tick.
 
-### Milestone 9: Task-Level Runtime
+### Milestone 10: Task-Level Runtime
 
 Goal: support higher-level behaviors such as go-to-target, patrol, follow, search, and task queues.
 
@@ -218,9 +259,10 @@ Start with Milestone 1 and Milestone 2 before adding new user-facing capabilitie
 After that, choose the next milestone based on the immediate research need:
 
 - If more dogs are needed, do Milestone 3.
-- If better usability is needed, do Milestone 4.
-- If multiple humans will control dogs, do Milestone 5.
-- If robots must be created dynamically, do Milestone 6.
-- If autonomy is needed, do Milestone 7 onward.
+- If ROS 2 integration is needed, do Milestone 4.
+- If better usability is needed, do Milestone 5.
+- If multiple humans will control dogs, do Milestone 6.
+- If robots must be created dynamically, do Milestone 7.
+- If autonomy is needed, do Milestone 8 onward.
 
 Each milestone should have its own detailed implementation plan and test plan before code changes begin.

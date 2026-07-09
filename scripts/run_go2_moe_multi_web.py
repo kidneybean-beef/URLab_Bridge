@@ -82,6 +82,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dash-max-vx", type=float, default=2.0)
     parser.add_argument("--dash-max-vy", type=float, default=1.0)
     parser.add_argument("--dash-max-yaw", type=float, default=3.14)
+    parser.add_argument(
+        "--metrics-log-interval-s",
+        type=float,
+        default=1.0,
+        help="seconds between periodic control-loop metric logs; 0 disables",
+    )
     return parser
 
 

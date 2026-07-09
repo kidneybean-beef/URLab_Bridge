@@ -276,6 +276,31 @@ def test_http_handler_can_drive_in_memory_command_source():
     assert source.poll() == pytest.approx((-1.0, 0.5, 0.0))
 
 
+def test_http_handler_serves_metrics_when_provider_is_configured():
+    from urlab_bridge.web_control import WebCommandSource, make_handler
+
+    source = WebCommandSource()
+    handler_cls = make_handler(
+        source,
+        metrics_provider=lambda: {
+            "tick_count": 7,
+            "missed_deadlines": 1,
+            "robots": {"go2": {"last_command_age_s": 0.12}},
+        },
+    )
+
+    status, body = handle_raw_http(
+        handler_cls,
+        b"GET /metrics HTTP/1.1\r\nHost: test\r\n\r\n",
+    )
+    payload = json.loads(body)
+
+    assert status == 200
+    assert payload["tick_count"] == 7
+    assert payload["missed_deadlines"] == 1
+    assert payload["robots"]["go2"]["last_command_age_s"] == pytest.approx(0.12)
+
+
 def test_http_handler_serves_page_and_applies_control():
     from urlab_bridge.web_control import WebControlBroker, make_handler
 
