@@ -154,6 +154,40 @@ class _RuntimeNamespace(_RpcNamespace):
             expected_op="set_twist_ok",
         )
 
+    def set_twist_control_state(
+        self,
+        articulation: str,
+        *,
+        max_vx: Optional[float] = None,
+        max_vy: Optional[float] = None,
+        max_yaw: Optional[float] = None,
+        dash_max_vx: Optional[float] = None,
+        dash_max_vy: Optional[float] = None,
+        dash_max_yaw: Optional[float] = None,
+        dash_active: Optional[bool] = None,
+    ) -> Dict[str, Any]:
+        """Update UE's twist-controller UI limits and dash display state."""
+        payload: Dict[str, Any] = {"articulation": str(articulation)}
+        if max_vx is not None:
+            payload["max_vx"] = float(max_vx)
+        if max_vy is not None:
+            payload["max_vy"] = float(max_vy)
+        if max_yaw is not None:
+            payload["max_yaw"] = float(max_yaw)
+        if dash_max_vx is not None:
+            payload["dash_max_vx"] = float(dash_max_vx)
+        if dash_max_vy is not None:
+            payload["dash_max_vy"] = float(dash_max_vy)
+        if dash_max_yaw is not None:
+            payload["dash_max_yaw"] = float(dash_max_yaw)
+        if dash_active is not None:
+            payload["dash_active"] = bool(dash_active)
+        return self._client._rpc(
+            "set_twist_control_state",
+            payload,
+            expected_op="set_twist_control_state_ok",
+        )
+
     def set_qpos(
         self,
         target: str,

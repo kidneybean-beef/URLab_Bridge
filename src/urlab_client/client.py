@@ -22,7 +22,7 @@ import tempfile
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, Union
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple, Union
 
 import numpy as np
 
@@ -559,6 +559,7 @@ class URLabClient:
         camera_timeout_s: float = 0.5,
         observations: Union[str, ObservationLevel] = "standard",
         target_hz: Optional[float] = None,
+        control_articulations: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
         """Advance the sim. Behaviour per `self.step_mode`:
 
@@ -589,6 +590,12 @@ class URLabClient:
         Either way the frames also land on ``art.cameras[name].latest_frame``
         via the background stream; the reply's ``cameras`` block is a snapshot.
 
+        ``control_articulations`` optionally limits which articulation control
+        payloads are sent on the direct/live RPC path. This is useful when two
+        clients are driving different robots in the same scene; each client can
+        update only its selected robot instead of re-sending stale controls for
+        every discovered articulation.
+
         Returns the raw step reply, useful when you need fields like
         ``sim_time`` or ``step`` directly; for state, prefer
         ``client.data`` and articulation accessors (``art.qpos_array``,
@@ -612,7 +619,11 @@ class URLabClient:
             # the difference is whether mj_step actually runs (Direct) or the
             # request just stamps NetworkValue and reads current state with
             # UE's autonomous physics continuing to advance (Live).
-            reply = self._step_direct(n_steps, observations=obs_str)
+            reply = self._step_direct(
+                n_steps,
+                observations=obs_str,
+                control_articulations=control_articulations,
+            )
 
         fid = reply.get("frame_id")
         if fid is not None:
@@ -729,10 +740,26 @@ class URLabClient:
             time.sleep(0.002)
 
     def _step_direct(
-        self, n_steps: int, *, observations: str,
+        self,
+        n_steps: int,
+        *,
+        observations: str,
+        control_articulations: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
+        if control_articulations is None:
+            prefixes = list(self.articulations.keys())
+        else:
+            prefixes = [str(prefix) for prefix in control_articulations]
+
         per_art: Dict[str, Any] = {}
-        for prefix, art in self.articulations.items():
+        for prefix in prefixes:
+            try:
+                art = self.articulations[prefix]
+            except KeyError as exc:
+                raise KeyError(
+                    f"articulation {prefix!r} not found. "
+                    f"Available articulations: {list(self.articulations.keys())}"
+                ) from exc
             per_art[prefix] = art._build_step_request(control_mode=None)
 
         # Cameras are NOT requested inline: they stream over SHM/ZMQ and are

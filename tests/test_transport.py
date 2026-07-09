@@ -22,7 +22,6 @@ Each test:
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 
 from urlab_client import URLabClient, URLabRPCError
@@ -33,7 +32,7 @@ from . import wire_replies as wr
 
 def _make_client(port: int, *, step_mode: str = "direct") -> URLabClient:
     return URLabClient(
-        f"tcp://127.0.0.1",
+        "tcp://127.0.0.1",
         step_mode=step_mode,
         step_port=port,
         recv_timeout_ms=2000,
@@ -104,6 +103,36 @@ def test_direct_step_sends_ctrl_and_absorbs_reply(mock_step_server, base_handsha
     assert mock_step_server.received[1]["op"] == "step"
     assert mock_step_server.received[1]["n_steps"] == 5
     per = mock_step_server.received[1]["per_articulation"]
+    assert per["vx300s"]["ctrl"][0] == pytest.approx(0.5)
+
+
+def test_step_can_send_only_selected_articulation_controls(base_handshake):
+    client = URLabClient(step_mode="direct")
+    client._apply_handshake(base_handshake)
+    sent: dict[str, object] = {}
+
+    def fake_rpc(op, payload, *, expected_op=None, recv_timeout_ms=None):
+        sent["op"] = op
+        sent["payload"] = payload
+        return wr.step_ok(
+            time=0.01, step=1,
+            per_articulation={
+                "vx300s": wr.per_articulation_block(
+                    qpos=[0.1, 0.2], qvel=[0.0, 0.0], ctrl=[0.5, 0.0],
+                ),
+                "go2": wr.per_articulation_block(qpos=[0.0], qvel=[0.0], ctrl=[0.7]),
+            },
+        )
+
+    client._rpc = fake_rpc  # type: ignore[method-assign]
+    client.articulations["vx300s"].set_ctrl({"waist": 0.5})
+    client.articulations["go2"].ctrl_array[:] = 0.7
+
+    client.step(n_steps=1, control_articulations=["vx300s"])
+
+    assert sent["op"] == "step"
+    per = sent["payload"]["per_articulation"]  # type: ignore[index]
+    assert list(per.keys()) == ["vx300s"]
     assert per["vx300s"]["ctrl"][0] == pytest.approx(0.5)
 
 
@@ -234,6 +263,47 @@ def test_configure_controller_rpc(mock_step_server, base_handshake):
     assert sent["op"] == "configure_controller"
     assert sent["articulation"] == "vx300s"
     assert sent["params"]["kp"]["waist"] == 320.0
+
+
+def test_set_twist_control_state_rpc(mock_step_server, base_handshake):
+    mock_step_server.replies.append(base_handshake)
+    mock_step_server.replies.append(wr.set_twist_control_state_ok(
+        articulation="go2",
+        dash_active=True,
+        max_vx=1.0,
+        max_vy=0.5,
+        max_yaw=1.57,
+        dash_max_vx=2.0,
+        dash_max_vy=1.0,
+        dash_max_yaw=3.14,
+    ))
+    client = _make_client(mock_step_server.port)
+    try:
+        client.connect()
+        result = client.runtime.set_twist_control_state(
+            "go2",
+            max_vx=1.0,
+            max_vy=0.5,
+            max_yaw=1.57,
+            dash_max_vx=2.0,
+            dash_max_vy=1.0,
+            dash_max_yaw=3.14,
+            dash_active=True,
+        )
+    finally:
+        client.close()
+
+    assert result["dash_active"] is True
+    sent = mock_step_server.received[1]
+    assert sent["op"] == "set_twist_control_state"
+    assert sent["articulation"] == "go2"
+    assert sent["max_vx"] == pytest.approx(1.0)
+    assert sent["max_vy"] == pytest.approx(0.5)
+    assert sent["max_yaw"] == pytest.approx(1.57)
+    assert sent["dash_max_vx"] == pytest.approx(2.0)
+    assert sent["dash_max_vy"] == pytest.approx(1.0)
+    assert sent["dash_max_yaw"] == pytest.approx(3.14)
+    assert sent["dash_active"] is True
 
 
 def test_recording_start_stop_save(mock_step_server, base_handshake):

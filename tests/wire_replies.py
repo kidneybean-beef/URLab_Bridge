@@ -472,6 +472,17 @@ def set_sim_options_ok(*, options: Optional[Dict[str, Any]] = None,
     return {"op": "set_sim_options_ok", "options": dict(options or {}), **extra}
 
 
+def set_twist_control_state_ok(*, articulation: str = "",
+                               dash_active: bool = False,
+                               **extra: Any) -> Dict[str, Any]:
+    return {
+        "op": "set_twist_control_state_ok",
+        "articulation": articulation,
+        "dash_active": bool(dash_active),
+        **extra,
+    }
+
+
 # ---------------------------------------------------------------------------
 # recording / replay namespaces
 # ---------------------------------------------------------------------------
