@@ -101,13 +101,13 @@ class KeyboardCommandSource:
             self._command[0] += self.config.step_vx
         elif key == "s":
             self._command[0] -= self.config.step_vx
-        elif key == "a":
-            self._command[1] += self.config.step_vy
-        elif key == "d":
-            self._command[1] -= self.config.step_vy
         elif key == "q":
-            self._command[2] += self.config.step_yaw
+            self._command[1] += self.config.step_vy
         elif key == "e":
+            self._command[1] -= self.config.step_vy
+        elif key == "a":
+            self._command[2] += self.config.step_yaw
+        elif key == "d":
             self._command[2] -= self.config.step_yaw
         elif key in (" ", "r", "x"):
             self._command[:] = 0.0
@@ -159,7 +159,7 @@ class TerminalKeyReader:
 
 def format_keyboard_help(config: KeyboardCommandConfig) -> str:
     return (
-        "keyboard: W/S vx +/-{:.2f}, A/D vy +/-{:.2f}, Q/E yaw +/-{:.2f}, "
+        "keyboard: W/S vx +/-{:.2f}, Q/E vy +/-{:.2f}, A/D yaw +/-{:.2f}, "
         "Space/R/X zero, Esc quit; limits vx={:.2f}, vy={:.2f}, yaw={:.2f}"
     ).format(
         config.step_vx,

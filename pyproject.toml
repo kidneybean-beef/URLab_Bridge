@@ -72,6 +72,7 @@ urlab-ui     = "urlab_bridge.cli.ui:main"
 urlab-ping   = "urlab_bridge.cli.ping:main"
 urlab-test   = "urlab_bridge.cli.test:main"
 urlab-policy = "urlab_bridge.cli.policy:main"
+urlab-web-control = "urlab_bridge.cli.web_control:main"
 
 [build-system]
 requires = ["hatchling"]
@@ -103,4 +104,3 @@ pythonpath = ["src"]
 filterwarnings = [
     "ignore::DeprecationWarning",
 ]
-

@@ -102,7 +102,7 @@ def _build_ctrl_data(art: URLabArticulation) -> Dict[str, Any]:
     """RoboJuDo policies expect `ctrl_data["JoystickCtrl"]["axes"]`
     with `LeftX` / `LeftY` / `RightX`. We synthesize those from
     URLab's twist input (the `UMjTwistController` on the actor maps
-    WASD / gamepad to `art.twist_linear` / `art.twist_angular`).
+    keyboard / gamepad input to `art.twist_linear` / `art.twist_angular`).
 
     Some policies (e.g. WTW) pre-scale by `max_cmd` then convert via
     `command_remap`. URLab's twist values are already in m/s and rad/s,

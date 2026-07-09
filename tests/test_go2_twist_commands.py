@@ -15,7 +15,7 @@ def test_fixed_command_source_returns_defensive_copy():
     assert source.poll().tolist() == pytest.approx([0.3, -0.2, 0.1])
 
 
-def test_keyboard_command_source_maps_wasd_qe_to_body_twist():
+def test_keyboard_command_source_maps_remapped_keys_to_body_twist():
     from urlab_policy.go2.twist_commands import (
         KeyboardCommandConfig,
         KeyboardCommandSource,
@@ -33,14 +33,14 @@ def test_keyboard_command_source_maps_wasd_qe_to_body_twist():
     )
 
     source.handle_key("w")
-    source.handle_key("a")
     source.handle_key("q")
+    source.handle_key("a")
 
     assert source.poll().tolist() == pytest.approx([0.1, 0.2, 0.3])
 
     source.handle_key("s")
-    source.handle_key("d")
     source.handle_key("e")
+    source.handle_key("d")
 
     assert source.poll().tolist() == pytest.approx([0.0, 0.0, 0.0])
 
@@ -62,7 +62,7 @@ def test_keyboard_command_source_clips_to_configured_limits():
         )
     )
 
-    for key in ["w", "w", "a", "a", "q", "q"]:
+    for key in ["w", "w", "q", "q", "a", "a"]:
         source.handle_key(key)
 
     assert source.poll().tolist() == pytest.approx([0.5, 0.5, 1.0])
@@ -93,7 +93,7 @@ def test_keyboard_command_source_polls_reader_keys():
     command = source.poll()
 
     assert isinstance(command, np.ndarray)
-    assert command.tolist() == pytest.approx([0.2, -0.1, 0.0])
+    assert command.tolist() == pytest.approx([0.2, 0.0, -0.2])
 
 
 def test_urlab_twist_command_source_reads_articulation_twist():

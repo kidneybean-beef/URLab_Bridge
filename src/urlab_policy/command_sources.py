@@ -78,7 +78,7 @@ def build_command_source(
 
 class TwistSource:
     """Body-frame velocity command read live from URLab's
-    `UMjTwistController` (WASD/gamepad in PIE). Returns
+    `UMjTwistController` (keyboard/gamepad in PIE). Returns
     `(num_envs, 3) = [vx, vy, yaw_rate]`. Falls back to zeros when no
     twist controller is attached on the UE side."""
 

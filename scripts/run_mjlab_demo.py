@@ -119,7 +119,7 @@ def main() -> int:
 
     # Motion file is only needed by tracking tasks. For velocity / standing
     # locomotion tasks, the policy reads the twist command from the URLab
-    # actor's UMjTwistController (WASD/gamepad in PIE), no motion file
+    # actor's UMjTwistController (keyboard/gamepad in PIE), no motion file
     # required. We let the runner figure it out: if an explicit --motion is
     # given, use it; otherwise use <demo-dir>/motion.npz when present, else
     # pass None and the adapter will silently skip MotionContext.

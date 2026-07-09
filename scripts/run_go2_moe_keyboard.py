@@ -58,12 +58,22 @@ from urlab_policy.go2.unitree_rl_gym_moe_compat import (  # noqa: E402
 logger = logging.getLogger("run_go2_moe_keyboard")
 
 
+def sync_command_source_runtime_ui(
+    command_source: object,
+    client: URLabClient,
+    articulation: str,
+) -> None:
+    sync = getattr(command_source, "sync_runtime_ui", None)
+    if callable(sync):
+        sync(client.runtime, articulation)
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Drive the Unitree RL Gym Go2 CTS/MoE policy with keyboard "
-            "velocity commands. W/S controls forward velocity, A/D lateral "
-            "velocity, Q/E yaw rate."
+            "velocity commands. W/S controls forward velocity, Q/E lateral "
+            "velocity, A/D yaw rate."
         )
     )
     parser.add_argument(
@@ -177,6 +187,7 @@ def run_keyboard_policy(
     client.connect(observations="standard")
 
     prefix = _select_articulation(client, args.articulation)
+    control_articulations = (prefix,)
     art = client.articulations[prefix]
     logger.info(
         "connected: prefix=%s joints=%d actuators=%d free_base=%s",
@@ -214,7 +225,11 @@ def run_keyboard_policy(
     try:
         client.runtime.set_control_source("ui", articulation=prefix)
         logger.info("control source set to UI for preflight")
-        client.step(n_steps=1, observations="standard")
+        client.step(
+            n_steps=1,
+            observations="standard",
+            control_articulations=control_articulations,
+        )
 
         report = build_go2_moe_compatibility_report(
             art,
@@ -250,12 +265,17 @@ def run_keyboard_policy(
             raise SystemExit(f"captured pose abort: {reason}")
 
         art.set_ctrl(current_pose)
-        client.step(n_steps=1, observations="standard")
+        client.step(
+            n_steps=1,
+            observations="standard",
+            control_articulations=control_articulations,
+        )
         client.runtime.set_control_source("zmq", articulation=prefix)
         switched_to_zmq = True
         logger.info("control source set to ZMQ for %s", prefix)
         logger.info("staged current pose sample: %s", _format_pose_sample(current_pose))
 
+        sync_command_source_runtime_ui(command_source, client, prefix)
         command = command_source.poll()
         obs = build_go2_moe_observation(
             art,
@@ -269,7 +289,12 @@ def run_keyboard_policy(
             if stop or command_source.quit_requested:
                 break
             art.set_ctrl(current_pose)
-            client.step(n_steps=1, observations="standard", target_hz=args.freq)
+            client.step(
+                n_steps=1,
+                observations="standard",
+                target_hz=args.freq,
+                control_articulations=control_articulations,
+            )
             if warmup_idx == 0:
                 logger.info("holding captured pose for %d warmup steps", args.warmup_steps)
 
@@ -287,6 +312,7 @@ def run_keyboard_policy(
             if reason is not None:
                 raise SystemExit(f"safety abort: {reason}")
 
+            sync_command_source_runtime_ui(command_source, client, prefix)
             command = command_source.poll()
             obs = build_go2_moe_observation(
                 art,
@@ -317,7 +343,12 @@ def run_keyboard_policy(
             )
 
             art.set_ctrl(applied_target)
-            client.step(n_steps=1, observations="standard", target_hz=args.freq)
+            client.step(
+                n_steps=1,
+                observations="standard",
+                target_hz=args.freq,
+                control_articulations=control_articulations,
+            )
             iters += 1
             applied_action = (
                 action if limit_mode.raw_policy else target_pose_to_action(applied_target)
@@ -343,6 +374,13 @@ def run_keyboard_policy(
             previous_target = applied_target
             last_action = applied_action
     finally:
+        release = getattr(command_source, "release", None)
+        if callable(release) and prefix:
+            try:
+                release()
+                sync_command_source_runtime_ui(command_source, client, prefix)
+            except Exception as exc:  # pragma: no cover - teardown best effort
+                logger.warning("failed to clear command-source UI state: %s", exc)
         if switched_to_zmq and not args.leave_zmq:
             try:
                 client.runtime.set_control_source("ui", articulation=prefix)
