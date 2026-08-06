@@ -122,6 +122,23 @@ class TuplePolicy(torch.nn.Module):
         return action, (weights, latent)
 
 
+class BatchTuplePolicy(torch.nn.Module):
+    history_length = 5
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.history = torch.zeros(1, 5, 45, dtype=torch.float32)
+
+    def forward(self, obs: torch.Tensor):
+        batch = int(obs.shape[0])
+        action = torch.arange(12, dtype=torch.float32).view(1, 12).repeat(batch, 1)
+        action = action + obs[:, 0].view(batch, 1)
+        weights = torch.arange(8, dtype=torch.float32).view(1, 8).repeat(batch, 1)
+        weights = weights + obs[:, 1].view(batch, 1)
+        latent = torch.zeros(batch, 32, dtype=torch.float32)
+        return action, (weights, latent)
+
+
 def test_infer_go2_moe_action_unwraps_torchscript_tuple_shape():
     action, diagnostics = infer_go2_moe_action(
         TuplePolicy(),
@@ -146,3 +163,79 @@ def test_reset_go2_moe_history_primes_all_history_frames():
     assert tuple(policy.history.shape) == (1, 5, 45)
     assert torch.allclose(policy.history[0, 0], torch.from_numpy(obs))
     assert torch.allclose(policy.history[0, -1], torch.from_numpy(obs))
+
+
+def test_reset_go2_moe_history_primes_one_history_per_robot_for_stacked_observations():
+    policy = BatchTuplePolicy()
+    obs = np.stack(
+        [
+            np.full(45, 0.25, dtype=np.float32),
+            np.full(45, -0.5, dtype=np.float32),
+        ],
+        axis=0,
+    )
+
+    reset_go2_moe_history(policy, obs)
+
+    assert tuple(policy.history.shape) == (2, 5, 45)
+    assert torch.allclose(policy.history[0, 0], torch.from_numpy(obs[0]))
+    assert torch.allclose(policy.history[0, -1], torch.from_numpy(obs[0]))
+    assert torch.allclose(policy.history[1, 0], torch.from_numpy(obs[1]))
+    assert torch.allclose(policy.history[1, -1], torch.from_numpy(obs[1]))
+
+
+def test_infer_go2_moe_action_returns_per_robot_outputs_for_stacked_observations():
+    policy = BatchTuplePolicy()
+    obs = np.zeros((2, 45), dtype=np.float32)
+    obs[0, 0] = 10.0
+    obs[1, 0] = -10.0
+    obs[0, 1] = 1.0
+    obs[1, 1] = 2.0
+
+    actions, diagnostics = infer_go2_moe_action(policy, obs)
+
+    assert actions.shape == (2, 12)
+    assert actions.dtype == np.float32
+    assert np.allclose(actions[0], np.arange(12, dtype=np.float32) + 10.0)
+    assert np.allclose(actions[1], np.arange(12, dtype=np.float32) - 10.0)
+    assert len(diagnostics) == 2
+    assert np.allclose(diagnostics[0].expert_weights, np.arange(8, dtype=np.float32) + 1.0)
+    assert np.allclose(diagnostics[1].expert_weights, np.arange(8, dtype=np.float32) + 2.0)
+    assert diagnostics[0].latent.shape == (32,)
+    assert diagnostics[1].latent.shape == (32,)
+
+
+def test_infer_go2_moe_action_single_row_input_matches_single_sample():
+    policy = BatchTuplePolicy()
+    obs = np.zeros(45, dtype=np.float32)
+    obs[0] = 3.0
+    obs[1] = 4.0
+
+    single_action, single_diagnostics = infer_go2_moe_action(policy, obs)
+    batch_actions, batch_diagnostics = infer_go2_moe_action(
+        policy,
+        obs.reshape(1, 45),
+    )
+
+    assert batch_actions.shape == (1, 12)
+    assert np.allclose(batch_actions[0], single_action)
+    assert np.allclose(
+        batch_diagnostics[0].expert_weights,
+        single_diagnostics.expert_weights,
+    )
+
+
+def test_go2_moe_unified_helpers_reject_invalid_observation_shapes():
+    policy = BatchTuplePolicy()
+
+    with pytest.raises(
+        ValueError,
+        match="observation must have shape \\(45,\\) or \\(N, 45\\)",
+    ):
+        reset_go2_moe_history(policy, np.zeros((2, 44), dtype=np.float32))
+
+    with pytest.raises(
+        ValueError,
+        match="observation must have shape \\(45,\\) or \\(N, 45\\)",
+    ):
+        infer_go2_moe_action(policy, np.zeros((2, 44), dtype=np.float32))

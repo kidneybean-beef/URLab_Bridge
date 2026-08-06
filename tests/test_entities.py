@@ -172,3 +172,19 @@ def test_camera_view_parses_mode_and_dtype():
     assert view.resolution == (640, 480)
     assert view.owner == "vx300s"
     assert view.dtype == np.dtype(np.float32)
+    assert view.enabled is True
+
+
+def test_camera_view_reads_disabled_handshake_state():
+    view = URLabCameraView.from_handshake(
+        "front_depth",
+        {
+            "mode": "depth",
+            "resolution": [640, 480],
+            "fovy": 90.0,
+            "enabled": False,
+        },
+        owner="go2",
+    )
+
+    assert view.enabled is False

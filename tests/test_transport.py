@@ -235,6 +235,35 @@ def test_set_mode_rpc(mock_step_server, base_handshake):
     assert client.step_mode is StepMode.PUPPET
 
 
+def test_camera_enabled_runtime_rpc(mock_step_server, base_handshake):
+    mock_step_server.replies.append(base_handshake)
+    mock_step_server.replies.append(
+        {
+            "op": "set_camera_enabled_ok",
+            "articulation": "vx300s",
+            "camera": "wrist",
+            "enabled": False,
+            "streaming": False,
+        }
+    )
+    client = _make_client(mock_step_server.port)
+    try:
+        client.connect()
+        result = client.runtime.set_camera_enabled("vx300s", "wrist", False)
+    finally:
+        client.close()
+
+    assert result["enabled"] is False
+    sent = mock_step_server.received[1]
+    assert sent == {
+        "op": "set_camera_enabled",
+        "session_id": "test-session-0",
+        "articulation": "vx300s",
+        "camera": "wrist",
+        "enabled": False,
+    }
+
+
 def test_configure_controller_rpc(mock_step_server, base_handshake):
     mock_step_server.replies.append(base_handshake)
     mock_step_server.replies.append(wr.configure_controller_ok(
@@ -289,6 +318,7 @@ def test_set_twist_control_state_rpc(mock_step_server, base_handshake):
             dash_max_vy=1.0,
             dash_max_yaw=3.14,
             dash_active=True,
+            keys={"w": True, "shift": True},
         )
     finally:
         client.close()
@@ -304,6 +334,7 @@ def test_set_twist_control_state_rpc(mock_step_server, base_handshake):
     assert sent["dash_max_vy"] == pytest.approx(1.0)
     assert sent["dash_max_yaw"] == pytest.approx(3.14)
     assert sent["dash_active"] is True
+    assert sent["keys"] == {"w": True, "shift": True}
 
 
 def test_recording_start_stop_save(mock_step_server, base_handshake):

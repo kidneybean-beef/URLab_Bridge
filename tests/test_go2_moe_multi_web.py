@@ -4,6 +4,7 @@ import importlib.util
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from urlab_bridge.control_server import (
@@ -47,6 +48,89 @@ def test_multi_web_parser_accepts_two_articulation_port_targets():
     assert args.max_vx == pytest.approx(1.0)
     assert args.max_vy == pytest.approx(0.5)
     assert args.max_yaw == pytest.approx(1.57)
+    assert args.cmd_accel_vx == pytest.approx(2.0)
+    assert args.cmd_accel_vy == pytest.approx(1.0)
+    assert args.cmd_accel_yaw == pytest.approx(3.14)
+    assert args.cmd_decel_vx == pytest.approx(3.0)
+    assert args.cmd_decel_vy == pytest.approx(1.5)
+    assert args.cmd_decel_yaw == pytest.approx(4.71)
+
+
+def test_multi_web_parser_accepts_optional_ros2_cmd_vel_gateway():
+    mod = _load_multi_web_script()
+
+    defaults = mod.build_arg_parser().parse_args([])
+    args = mod.build_arg_parser().parse_args([
+        "--ros2-cmd-vel",
+        "--ros2-node-name",
+        "urlab_test_ros2",
+        "--ros2-publish-state",
+        "--ros2-publish-sensors",
+        "--ros2-publish-cameras",
+        "--ros2-state-hz",
+        "25",
+        "--ros2-camera-fps",
+        "12",
+    ])
+
+    assert defaults.ros2_cmd_vel is False
+    assert defaults.ros2_publish_state is False
+    assert defaults.ros2_publish_sensors is False
+    assert defaults.ros2_publish_cameras is False
+    assert defaults.ros2_state_hz is None
+    assert defaults.ros2_camera_fps is None
+    assert defaults.ros2_node_name == "urlab_go2_control_server"
+    assert args.ros2_cmd_vel is True
+    assert args.ros2_publish_state is True
+    assert args.ros2_publish_sensors is True
+    assert args.ros2_publish_cameras is True
+    assert args.ros2_state_hz == pytest.approx(25.0)
+    assert args.ros2_camera_fps == pytest.approx(12.0)
+    assert args.ros2_node_name == "urlab_test_ros2"
+
+
+def test_multi_web_parser_maps_rgb_camera_to_web_target():
+    mod = _load_multi_web_script()
+
+    args = mod.build_arg_parser().parse_args([
+        "--web-target", "dog_a:8099",
+        "--web-camera", "dog_a:front_rgb",
+        "--camera-fps", "18",
+        "--camera-jpeg-quality", "76",
+    ])
+    targets = mod.parse_web_targets(args)
+
+    assert mod.parse_web_cameras(args, targets) == [
+        mod.WebCameraTarget("dog_a", "front_rgb")
+    ]
+    assert args.camera_fps == pytest.approx(18.0)
+    assert args.camera_jpeg_quality == 76
+
+
+def test_multi_web_parser_maps_same_camera_name_for_two_robots():
+    mod = _load_multi_web_script()
+    args = mod.build_arg_parser().parse_args([
+        "--web-target", "dog_a:8099",
+        "--web-target", "dog_b:8100",
+        "--web-camera", "dog_a:front_rgb",
+        "--web-camera", "dog_b:front_rgb",
+    ])
+
+    assert mod.parse_web_cameras(args, mod.parse_web_targets(args)) == [
+        mod.WebCameraTarget("dog_a", "front_rgb"),
+        mod.WebCameraTarget("dog_b", "front_rgb"),
+    ]
+
+
+def test_multi_web_parser_rejects_camera_for_uncontrolled_robot():
+    mod = _load_multi_web_script()
+    args = mod.build_arg_parser().parse_args([
+        "--web-target", "dog_a:8099",
+        "--web-camera", "dog_b:front_rgb",
+    ])
+
+    with pytest.raises(SystemExit, match="not a configured --web-target"):
+        mod.parse_web_cameras(args, mod.parse_web_targets(args))
 
 
 def test_multi_web_parser_fallback_articulation_port_target():
@@ -59,6 +143,56 @@ def test_multi_web_parser_fallback_articulation_port_target():
 
     targets = mod.parse_web_targets(args)
     assert targets == [WebPolicyTarget(articulation="dog_a", port=8099)]
+
+
+def test_multi_web_policy_benchmark_uses_report_mode_without_starting_server(monkeypatch):
+    mod = _load_multi_web_script()
+    benchmark_calls: list[tuple[str, str]] = []
+
+    def fake_benchmark(args) -> int:
+        benchmark_calls.append((args.policy, args.device))
+        return 0
+
+    class ExplodingServer:
+        def __init__(self, *args, **kwargs) -> None:
+            raise AssertionError("policy benchmark must not start URLabControlServer")
+
+    monkeypatch.setattr(mod, "run_policy_benchmark", fake_benchmark, raising=False)
+    monkeypatch.setattr(mod, "URLabControlServer", ExplodingServer)
+
+    result = mod.main(["--policy-benchmark", "--device", "cpu"])
+
+    assert result == 0
+    assert benchmark_calls == [(mod.build_arg_parser().parse_args([]).policy, "cpu")]
+
+
+def test_policy_benchmark_runs_with_injected_policy_helpers(monkeypatch, capsys):
+    mod = _load_multi_web_script()
+    infer_shapes: list[tuple[int, int]] = []
+
+    monkeypatch.setattr(mod, "load_go2_moe_policy", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        mod,
+        "reset_go2_moe_history",
+        lambda *args, **kwargs: True,
+    )
+
+    def fake_infer(_policy, observations, *, device):
+        infer_shapes.append(tuple(observations.shape))
+        return (
+            np.zeros((observations.shape[0], 12), dtype=np.float32),
+            [SimpleNamespace(expert_weights=np.zeros(8)) for _ in range(observations.shape[0])],
+        )
+
+    monkeypatch.setattr(mod, "infer_go2_moe_action", fake_infer)
+    args = mod.build_arg_parser().parse_args(["--policy-benchmark", "--device", "cpu"])
+
+    result = mod.run_policy_benchmark(args)
+
+    assert result == 0
+    assert (1, 45) in infer_shapes
+    assert (16, 45) in infer_shapes
+    assert "batch_size,mean_ms,p50_ms,p95_ms" in capsys.readouterr().out
 
 
 def test_robot_registry_rejects_duplicate_articulation():
@@ -387,9 +521,12 @@ def test_multi_web_policy_uses_one_client_and_steps_selected_articulations(monke
         load_policy=lambda *args, **kwargs: object(),
         build_observation=lambda *args, **kwargs: [0.0],
         reset_history=lambda *args, **kwargs: None,
-        infer_action=lambda *args, **kwargs: (
-            [0.0],
-            SimpleNamespace(expert_weights=[0.0]),
+        infer_action=lambda _policy, observations, **kwargs: (
+            np.zeros((len(observations), 1), dtype=np.float32),
+            [
+                SimpleNamespace(expert_weights=np.zeros(1, dtype=np.float32))
+                for _ in range(len(observations))
+            ],
         ),
         action_abort_reason=lambda *args, **kwargs: None,
         apply_action_limit=lambda action, **kwargs: (action, False),
@@ -525,9 +662,12 @@ def test_multi_web_policy_records_control_loop_metrics(monkeypatch):
         load_policy=lambda *args, **kwargs: object(),
         build_observation=lambda *args, **kwargs: [0.0],
         reset_history=lambda *args, **kwargs: None,
-        infer_action=lambda *args, **kwargs: (
-            [0.0],
-            SimpleNamespace(expert_weights=[0.0]),
+        infer_action=lambda _policy, observations, **kwargs: (
+            np.zeros((len(observations), 1), dtype=np.float32),
+            [
+                SimpleNamespace(expert_weights=np.zeros(1, dtype=np.float32))
+                for _ in range(len(observations))
+            ],
         ),
         action_abort_reason=lambda *args, **kwargs: None,
         apply_action_limit=lambda action, **kwargs: (action, False),
@@ -552,3 +692,167 @@ def test_multi_web_policy_records_control_loop_metrics(monkeypatch):
     assert snapshot["tick_count"] == 1
     assert snapshot["active_robot_count"] == 1
     assert set(snapshot["robots"]) == {"dog_a", "dog_b"}
+
+
+def test_multi_web_policy_loads_one_policy_and_stacks_two_robot_inference(monkeypatch):
+    mod = _load_multi_web_script()
+
+    class FakeRuntime:
+        def set_control_source(self, source: str, *, articulation: str) -> None:
+            pass
+
+    class FakeArt:
+        joints = ["joint"]
+        actuators = ["actuator"]
+        has_free_base = True
+        root_pos_w = [0.0, 0.0, 0.3]
+
+        def __init__(self, name: str) -> None:
+            self.name = name
+            self.ctrl_targets: list[dict[str, float]] = []
+
+        def set_ctrl(self, pose: dict[str, float]) -> None:
+            self.ctrl_targets.append(dict(pose))
+
+    class FakeClient:
+        def __init__(self) -> None:
+            self.runtime = FakeRuntime()
+            self.articulations = {
+                "dog_a": FakeArt("dog_a"),
+                "dog_b": FakeArt("dog_b"),
+            }
+            self.sim_time = 0.0
+
+        def step(self, *args, **kwargs) -> None:
+            pass
+
+    class OneTickCommandSource:
+        def __init__(self, command) -> None:
+            self.command = command
+            self.poll_count = 0
+
+        @property
+        def quit_requested(self) -> bool:
+            return self.poll_count >= 2
+
+        def stop_if_stale(self) -> bool:
+            return False
+
+        def poll(self):
+            self.poll_count += 1
+            return self.command
+
+        def status(self) -> dict:
+            return {
+                "active": any(self.command),
+                "stale": False,
+                "last_command_age_s": 0.0,
+                "twist": list(self.command),
+            }
+
+        def sync_runtime_ui(self, runtime: object, articulation: str) -> bool:
+            return True
+
+        def release(self) -> None:
+            pass
+
+    args = mod.build_arg_parser().parse_args([
+        "--web-target",
+        "dog_a:8099",
+        "--web-target",
+        "dog_b:8100",
+    ])
+    loaded_policies: list[tuple[str, str]] = []
+    reset_inputs: list[np.ndarray] = []
+    infer_inputs: list[np.ndarray] = []
+
+    def build_observation(art, *, command, last_action):
+        return np.array(
+            [
+                1.0 if art.name == "dog_a" else 2.0,
+                float(command[0]),
+                float(np.asarray(last_action, dtype=np.float32)[0]),
+            ],
+            dtype=np.float32,
+        )
+
+    def load_policy(path, *, device):
+        loaded_policies.append((path, device))
+        return "shared-policy"
+
+    def reset_history(policy, observations, *, device):
+        assert policy == "shared-policy"
+        reset_inputs.append(np.asarray(observations, dtype=np.float32).copy())
+        return True
+
+    def infer_action(policy, observations, *, device):
+        assert policy == "shared-policy"
+        infer_inputs.append(np.asarray(observations, dtype=np.float32).copy())
+        return (
+            np.array([[0.11], [0.22]], dtype=np.float32),
+            [
+                SimpleNamespace(expert_weights=np.array([0.1], dtype=np.float32)),
+                SimpleNamespace(expert_weights=np.array([0.2], dtype=np.float32)),
+            ],
+        )
+
+    deps = Go2MoeDependencies(
+        action_size=1,
+        select_articulation=lambda _client, name: name,
+        format_pose_sample=lambda pose: pose,
+        push_gains=lambda *args, **kwargs: 0,
+        resolve_torque_limits=lambda value: [1.0],
+        sync_command_source_runtime_ui=lambda source, _client, prefix: source.sync_runtime_ui(
+            _client.runtime,
+            prefix,
+        ),
+        build_compatibility_report=lambda *args, **kwargs: SimpleNamespace(
+            model_ok=True,
+            stand_ready=True,
+            summary=lambda: "ok",
+        ),
+        format_compatibility_report=lambda report: "",
+        safety_abort_reason=lambda *args, **kwargs: None,
+        capture_actuated_joint_pose=lambda art: {"joint": 0.0},
+        validate_target_pose=lambda pose: None,
+        load_policy=load_policy,
+        build_observation=build_observation,
+        reset_history=reset_history,
+        infer_action=infer_action,
+        action_abort_reason=lambda *args, **kwargs: None,
+        apply_action_limit=lambda action, **kwargs: (action, False),
+        action_to_target_pose=lambda art, action: {"joint": float(action[0])},
+        maybe_rate_limit_target_pose=lambda previous, desired, **kwargs: desired,
+        target_pose_to_action=lambda target: [target["joint"]],
+        target_delta_abs_max=lambda previous, target: 0.0,
+        signal_handler=lambda *args, **kwargs: None,
+    )
+    sources = [
+        OneTickCommandSource((1.0, 0.0, 0.0)),
+        OneTickCommandSource((0.0, 0.0, 0.0)),
+    ]
+    client = FakeClient()
+
+    result = Go2MoeControlLoop(
+        args,
+        list(zip(mod.parse_web_targets(args), sources)),
+        mod.resolve_limit_mode(args),
+        deps,
+        metrics_log_interval_s=0.0,
+    ).run(client)
+
+    assert result == 0
+    assert loaded_policies == [(args.policy, args.device)]
+    assert len(reset_inputs) == 1
+    assert reset_inputs[0].shape == (2, 3)
+    assert np.allclose(reset_inputs[0][:, 0], [1.0, 2.0])
+    assert np.allclose(reset_inputs[0][:, 1], [0.0, 0.0])
+    assert len(infer_inputs) == 1
+    assert infer_inputs[0].shape == (2, 3)
+    assert np.allclose(infer_inputs[0][:, 1], [0.04, 0.0])
+    assert client.articulations["dog_a"].ctrl_targets[-1] == {
+        "joint": pytest.approx(0.11)
+    }
+    assert client.articulations["dog_b"].ctrl_targets[-1] == {
+        "joint": pytest.approx(0.22)
+    }

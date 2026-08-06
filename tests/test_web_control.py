@@ -6,6 +6,12 @@ from io import BytesIO
 import pytest
 
 
+def _expected_keys(**pressed: bool) -> dict[str, bool]:
+    keys = {name: False for name in ("w", "s", "q", "e", "a", "d", "space", "shift")}
+    keys.update({name: bool(value) for name, value in pressed.items()})
+    return keys
+
+
 class FakeRuntime:
     def __init__(self, twist_control_state_reply: dict | None = None) -> None:
         self.calls: list[tuple[str, tuple[float, float, float], tuple[float, float, float]]] = []
@@ -218,13 +224,16 @@ def test_web_command_source_syncs_dash_display_state_to_runtime():
     assert source.sync_runtime_ui(runtime, "go2") is True
     assert runtime.twist_control_state_calls[-1] == (
         "go2",
-        {"dash_active": False},
+        {"dash_active": False, "keys": _expected_keys()},
     )
 
     source.apply_control({"keys": {"w": True, "shift": True}})
 
     assert source.sync_runtime_ui(runtime, "go2") is True
-    assert runtime.twist_control_state_calls[-1][1] == {"dash_active": True}
+    assert runtime.twist_control_state_calls[-1][1] == {
+        "dash_active": True,
+        "keys": _expected_keys(w=True, shift=True),
+    }
     assert runtime.twist_control_state_calls[-1][1]["dash_active"] is True
     assert source.poll() == pytest.approx((0.5, 0.0, 0.0))
 
@@ -232,6 +241,7 @@ def test_web_command_source_syncs_dash_display_state_to_runtime():
 
     assert source.sync_runtime_ui(runtime, "go2") is True
     assert runtime.twist_control_state_calls[-1][1]["dash_active"] is False
+    assert runtime.twist_control_state_calls[-1][1]["keys"] == _expected_keys()
 
 
 def test_web_command_source_stales_shift_only_dash_display_state():
@@ -244,12 +254,14 @@ def test_web_command_source_stales_shift_only_dash_display_state():
     source.apply_control({"keys": {"shift": True}})
     assert source.sync_runtime_ui(runtime, "go2") is True
     assert runtime.twist_control_state_calls[-1][1]["dash_active"] is True
+    assert runtime.twist_control_state_calls[-1][1]["keys"] == _expected_keys(shift=True)
 
     clock.now += 0.6
 
     assert source.stop_if_stale() is True
     assert source.sync_runtime_ui(runtime, "go2") is True
     assert runtime.twist_control_state_calls[-1][1]["dash_active"] is False
+    assert runtime.twist_control_state_calls[-1][1]["keys"] == _expected_keys()
 
 
 def test_http_handler_can_drive_in_memory_command_source():
@@ -337,6 +349,124 @@ def test_http_handler_serves_page_and_applies_control():
     )
 
 
+def test_http_handler_embeds_and_serves_discovered_camera_streams():
+    from urlab_bridge.web_control import WebCommandSource, make_handler
+
+    class FakeCameraStream:
+        def __init__(self, camera: str) -> None:
+            self.camera = camera
+            self.closed = False
+
+        def status(self) -> dict:
+            return {
+                "ok": True,
+                "articulation": "go2",
+                "camera": self.camera,
+                "available": True,
+                "enabled": True,
+            }
+
+        def wait_for_frame(self, *, after_sequence: int, timeout_s: float):
+            assert after_sequence == 0
+            assert timeout_s > 0.0
+            self.closed = True
+            return 1, b"jpeg-frame"
+
+    rgb = FakeCameraStream("front_rgb")
+    depth = FakeCameraStream("front_depth")
+
+    class FakeRobotCameras:
+        closed = False
+
+        def inventory(self) -> dict:
+            return {
+                "ok": True,
+                "articulation": "go2",
+                "default_camera": "front_rgb",
+                "cameras": [rgb.status(), depth.status()],
+            }
+
+        def stream_for(self, camera: str):
+            return {"front_rgb": rgb, "front_depth": depth}.get(camera)
+
+    handler_cls = make_handler(WebCommandSource(), camera_stream=FakeRobotCameras())
+
+    status, body = handle_raw_http(
+        handler_cls,
+        b"GET / HTTP/1.1\r\nHost: test\r\n\r\n",
+    )
+    html = body.decode("utf-8")
+    assert status == 200
+    assert 'id="camera-image"' in html
+    assert '<div class="workspace with-camera">' in html
+    assert html.index('class="control-pad"') < html.index('class="camera-view"')
+    assert 'id="camera-fps"' in html
+    assert 'power.className = "camera-power"' in html
+    assert 'fetch("/api/cameras"' in html
+    assert 'camera-tabs' in html
+    assert 'fetch("/api/camera/enabled"' not in html
+    assert "cameraDisplayStates" in html
+    assert 'cameraImage.removeAttribute("src")' in html
+    assert "streamRevision" in html
+    assert "status.encoded_frames" in html
+    assert "elapsedSeconds" in html
+
+    status, body = handle_raw_http(
+        handler_cls,
+        b"GET /api/cameras HTTP/1.1\r\nHost: test\r\n\r\n",
+    )
+    assert status == 200
+    inventory = json.loads(body)
+    assert inventory["default_camera"] == "front_rgb"
+    assert [item["camera"] for item in inventory["cameras"]] == [
+        "front_rgb",
+        "front_depth",
+    ]
+
+    status, body = handle_raw_http(
+        handler_cls,
+        b"GET /api/camera/status?camera=front_depth HTTP/1.1\r\nHost: test\r\n\r\n",
+    )
+    assert status == 200
+    assert json.loads(body)["camera"] == "front_depth"
+
+    request_body = b'{"camera":"front_depth","enabled":false}'
+    status, body = handle_raw_http(
+        handler_cls,
+        (
+            b"POST /api/camera/enabled HTTP/1.1\r\n"
+            b"Host: test\r\n"
+            b"Content-Type: application/json\r\n"
+            + f"Content-Length: {len(request_body)}\r\n\r\n".encode("ascii")
+            + request_body
+        ),
+    )
+    assert status == 404
+
+    status, body = handle_raw_http(
+        handler_cls,
+        b"GET /api/camera/stream.mjpg?camera=front_depth HTTP/1.1\r\nHost: test\r\n\r\n",
+    )
+    assert status == 200
+    assert b"Content-Type: image/jpeg" in body
+    assert b"jpeg-frame" in body
+
+
+def test_http_handler_omits_camera_panel_when_unconfigured():
+    from urlab_bridge.web_control import WebCommandSource, make_handler
+
+    handler_cls = make_handler(WebCommandSource())
+    status, body = handle_raw_http(
+        handler_cls,
+        b"GET / HTTP/1.1\r\nHost: test\r\n\r\n",
+    )
+
+    assert status == 200
+    assert b'id="camera-tabs"' not in body
+    assert b'id="camera-image"' not in body
+    assert b'<div class="workspace">' in body
+
+
 def test_http_handler_serves_virtual_button_controls():
     from urlab_bridge.web_control import WebControlBroker, make_handler
 
@@ -350,11 +480,11 @@ def test_http_handler_serves_virtual_button_controls():
     html = body.decode("utf-8")
 
     assert status == 200
-    for key in ("w", "s", "q", "e", "a", "d", "space"):
+    for key in ("w", "s", "q", "e", "a", "d", "shift", "space"):
         assert f'data-key="{key}"' in html
     assert '"strafe-left forward strafe-right"' in html
     assert '"turn-left backward turn-right"' in html
-    assert '"brake brake brake"' in html
+    assert '"dash brake brake"' in html
     assert 'aria-pressed="false"' in html
     assert "syncButtons" in html
     assert "pointerdown" in html

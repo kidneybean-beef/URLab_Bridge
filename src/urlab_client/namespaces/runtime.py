@@ -111,6 +111,31 @@ class _RuntimeNamespace(_RpcNamespace):
         )
         return float(reply.get("percent", percent))
 
+    def get_camera_enabled(self, articulation: str, camera: str) -> Dict[str, Any]:
+        """Return the master capture state for one articulation camera."""
+        return self._client._rpc(
+            "get_camera_enabled",
+            {
+                "articulation": str(articulation),
+                "camera": str(camera),
+            },
+            expected_op="get_camera_enabled_ok",
+        )
+
+    def set_camera_enabled(
+        self, articulation: str, camera: str, enabled: bool
+    ) -> Dict[str, Any]:
+        """Start or stop capture/readback for one articulation camera."""
+        return self._client._rpc(
+            "set_camera_enabled",
+            {
+                "articulation": str(articulation),
+                "camera": str(camera),
+                "enabled": bool(enabled),
+            },
+            expected_op="set_camera_enabled_ok",
+        )
+
     def set_control_source(
         self, source: str, *, articulation: Optional[str] = None
     ) -> None:
@@ -165,8 +190,9 @@ class _RuntimeNamespace(_RpcNamespace):
         dash_max_vy: Optional[float] = None,
         dash_max_yaw: Optional[float] = None,
         dash_active: Optional[bool] = None,
+        keys: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        """Update UE's twist-controller UI limits and dash display state."""
+        """Update UE's twist-controller UI limits, dash, and key overlay state."""
         payload: Dict[str, Any] = {"articulation": str(articulation)}
         if max_vx is not None:
             payload["max_vx"] = float(max_vx)
@@ -182,6 +208,8 @@ class _RuntimeNamespace(_RpcNamespace):
             payload["dash_max_yaw"] = float(dash_max_yaw)
         if dash_active is not None:
             payload["dash_active"] = bool(dash_active)
+        if keys is not None:
+            payload["keys"] = {str(name): bool(value) for name, value in keys.items()}
         return self._client._rpc(
             "set_twist_control_state",
             payload,

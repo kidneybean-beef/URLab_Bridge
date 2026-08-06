@@ -23,6 +23,7 @@ import time
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Callable, Mapping
+from urllib.parse import parse_qs, urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -108,7 +109,7 @@ class WebControlBroker:
         self._last_command_at: float | None = None
         self._last_twist: tuple[float, float, float] = _ZERO_TWIST
         self._last_keys = KeyState()
-        self._last_ui_sync_state: tuple[tuple[str, float | bool], ...] | None = None
+        self._last_ui_sync_state: tuple[tuple[str, Any], ...] | None = None
         self._ui_sync_disabled = False
         self._active = False
 
@@ -228,7 +229,7 @@ class WebCommandSource:
         self._last_command_at: float | None = None
         self._last_twist: tuple[float, float, float] = _ZERO_TWIST
         self._last_keys = KeyState()
-        self._last_ui_sync_state: tuple[tuple[str, float | bool], ...] | None = None
+        self._last_ui_sync_state: tuple[tuple[str, Any], ...] | None = None
         self._ui_sync_disabled = False
         self._active = False
         self._quit_requested = False
@@ -236,6 +237,11 @@ class WebCommandSource:
     @property
     def quit_requested(self) -> bool:
         return self._quit_requested
+
+    @property
+    def brake_requested(self) -> bool:
+        with self._lock:
+            return bool(self._last_keys.space)
 
     def poll(self) -> tuple[float, float, float]:
         self.stop_if_stale()
@@ -341,17 +347,28 @@ def make_handler(
     broker: WebControlBroker,
     *,
     metrics_provider: Callable[[], Mapping[str, Any]] | object | None = None,
+    camera_stream: object | None = None,
 ) -> type[BaseHTTPRequestHandler]:
     class WebControlHandler(BaseHTTPRequestHandler):
         server_version = "URLabWebControl/0.1"
 
         def do_GET(self) -> None:  # noqa: N802
-            if self.path == "/":
-                self._send_html(_INDEX_HTML)
-            elif self.path == "/health":
+            request = urlsplit(self.path)
+            path = request.path
+            camera_name = parse_qs(request.query).get("camera", [None])[0]
+            if path == "/":
+                self._send_html(_render_index(camera_stream is not None))
+            elif path == "/health":
                 self._send_json(200, broker.status())
-            elif self.path == "/metrics" and metrics_provider is not None:
+            elif path == "/metrics" and metrics_provider is not None:
                 self._send_json(200, _metrics_payload(metrics_provider))
+            elif path == "/api/cameras" and camera_stream is not None:
+                self._send_json(200, self._camera_inventory())
+            elif path == "/api/camera/status" and camera_stream is not None:
+                stream = self._camera_for(camera_name)
+                self._send_json(200, stream.status())
+            elif path == "/api/camera/stream.mjpg" and camera_stream is not None:
+                self._send_mjpeg(self._camera_for(camera_name))
             else:
                 self._send_json(404, {"ok": False, "error": "not_found"})
 
@@ -391,6 +408,32 @@ def make_handler(
                 raise ValueError("JSON body must be an object")
             return payload
 
+        def _camera_for(self, camera_name: str | None) -> object:
+            resolver = getattr(camera_stream, "stream_for", None)
+            if callable(resolver):
+                stream = resolver(camera_name)
+            else:
+                stream = camera_stream
+                if camera_name:
+                    status = stream.status()
+                    if status.get("camera") != camera_name:
+                        stream = None
+            if stream is None:
+                raise ValueError(f"unknown camera {camera_name!r}")
+            return stream
+
+        def _camera_inventory(self) -> Mapping[str, Any]:
+            inventory = getattr(camera_stream, "inventory", None)
+            if callable(inventory):
+                return inventory()
+            status = camera_stream.status()
+            return {
+                "ok": True,
+                "articulation": status.get("articulation", ""),
+                "default_camera": status.get("camera", ""),
+                "cameras": [status],
+            }
+
         def _send_html(self, body: str) -> None:
             data = body.encode("utf-8")
             self.send_response(200)
@@ -408,6 +451,44 @@ def make_handler(
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
             self.wfile.write(data)
+
+        def _send_mjpeg(self, stream: object) -> None:
+            self.send_response(200)
+            self.send_header(
+                "Content-Type",
+                "multipart/x-mixed-replace; boundary=urlab-frame",
+            )
+            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate")
+            self.send_header("Pragma", "no-cache")
+            self.end_headers()
+
+            sequence = 0
+            acquire_viewer = getattr(stream, "acquire_viewer", None)
+            release_viewer = getattr(stream, "release_viewer", None)
+            if callable(acquire_viewer):
+                acquire_viewer()
+            try:
+                while not bool(getattr(stream, "closed", False)):
+                    frame = stream.wait_for_frame(
+                        after_sequence=sequence,
+                        timeout_s=1.0,
+                    )
+                    if frame is None:
+                        continue
+                    sequence, jpeg = frame
+                    self.wfile.write(b"--urlab-frame\r\n")
+                    self.wfile.write(b"Content-Type: image/jpeg\r\n")
+                    self.wfile.write(
+                        f"Content-Length: {len(jpeg)}\r\n\r\n".encode("ascii")
+                    )
+                    self.wfile.write(jpeg)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+            finally:
+                if callable(release_viewer):
+                    release_viewer()
 
     return WebControlHandler
 
@@ -483,9 +564,10 @@ def _any_key_pressed(keys: KeyState) -> bool:
 def _twist_control_state_payload(
     config: WebTwistConfig,
     keys: KeyState,
-) -> dict[str, float | bool]:
+) -> dict[str, Any]:
     return {
         "dash_active": bool(keys.shift),
+        "keys": {name: bool(getattr(keys, name)) for name in _KEY_FIELDS},
     }
 
 
@@ -517,6 +599,25 @@ def _config_from_twist_control_reply(
     return WebTwistConfig(**values)
 
 
+_CAMERA_PANEL_HTML = """
+    <section class="camera-view" aria-label="Robot camera">
+      <div id="camera-tabs" class="camera-tabs" aria-label="Available cameras"></div>
+      <div class="camera-frame">
+        <img id="camera-image" alt="Selected robot camera">
+        <output id="camera-fps" class="camera-fps" aria-live="polite">-- FPS</output>
+      </div>
+    </section>
+"""
+
+
+def _render_index(camera_enabled: bool) -> str:
+    panel = _CAMERA_PANEL_HTML if camera_enabled else ""
+    camera_class = " with-camera" if camera_enabled else ""
+    return _INDEX_HTML.replace(
+        "<!-- URLAB_CAMERA_PANEL -->", panel
+    ).replace("<!-- URLAB_CAMERA_CLASS -->", camera_class)
+
+
 _INDEX_HTML = """<!doctype html>
 <html lang="en">
 <head>
@@ -533,29 +634,121 @@ _INDEX_HTML = """<!doctype html>
       font-family: system-ui, sans-serif;
     }
     body {
-      display: grid;
-      place-items: center;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
       user-select: none;
       outline: none;
       min-height: 100dvh;
+      box-sizing: border-box;
+      padding: 24px 0;
+      overflow: auto;
     }
     main {
-      width: min(92vw, 560px);
+      width: min(94vw, 1280px);
       text-align: center;
     }
     h1 {
       font-size: 2rem;
       font-weight: 700;
       letter-spacing: 0;
-      margin: 0 0 28px;
+      margin: 0 0 18px;
+    }
+    .workspace.with-camera {
+      display: grid;
+      grid-template-columns: minmax(300px, 420px) minmax(0, 1fr);
+      align-items: center;
+      gap: 24px;
+    }
+    .camera-view {
+      width: 100%;
+      min-width: 0;
+      margin: 0;
+    }
+    .camera-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .camera-tab {
+      display: inline-flex;
+      align-items: stretch;
+      border: 1px solid #303946;
+      border-radius: 6px;
+      overflow: hidden;
+      background: #1a2028;
+    }
+    .camera-tab.selected {
+      border-color: #74a7ff;
+    }
+    .camera-select, .camera-power {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: #eef2f7;
+      cursor: pointer;
+      font: inherit;
+    }
+    .camera-select {
+      padding: 7px 9px;
+      text-align: left;
+    }
+    .camera-mode {
+      display: block;
+      color: #aeb8c5;
+      font-size: 0.7rem;
+      line-height: 1.1;
+    }
+    .camera-power {
+      width: 34px;
+      border-left: 1px solid #303946;
+      color: #53d89b;
+      font-size: 1rem;
+    }
+    .camera-power[aria-pressed="false"] {
+      color: #7f8996;
+    }
+    .camera-frame {
+      position: relative;
+    }
+    .camera-frame img {
+      display: block;
+      width: 100%;
+      aspect-ratio: 4 / 3;
+      object-fit: contain;
+      box-sizing: border-box;
+      background: #050607;
+      border: 1px solid #303946;
+      border-radius: 6px;
+    }
+    .camera-fps {
+      position: absolute;
+      top: 10px;
+      right: 10px;
+      padding: 5px 8px;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 4px;
+      background: rgba(5, 6, 7, 0.78);
+      color: #ffffff;
+      font-size: 0.82rem;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      line-height: 1;
+      pointer-events: none;
+    }
+    .camera-frame.camera-off img {
+      opacity: 0;
     }
     .control-pad {
       display: grid;
+      width: min(100%, 560px);
+      margin: 0 auto;
       grid-template-columns: repeat(3, minmax(86px, 1fr));
       grid-template-areas:
         "strafe-left forward strafe-right"
         "turn-left backward turn-right"
-        "brake brake brake";
+        "dash brake brake";
       gap: 12px;
     }
     .control-button {
@@ -608,14 +801,26 @@ _INDEX_HTML = """<!doctype html>
     .strafe-right { grid-area: strafe-right; }
     .turn-left { grid-area: turn-left; }
     .turn-right { grid-area: turn-right; }
+    .dash { grid-area: dash; }
     .brake { grid-area: brake; }
+    @media (max-width: 900px) {
+      .workspace.with-camera {
+        width: min(100%, 840px);
+        margin: 0 auto;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 18px;
+      }
+    }
     @media (max-width: 420px) {
       main {
-        width: min(94vw, 360px);
+        width: min(94vw, 380px);
       }
       h1 {
         font-size: 1.5rem;
-        margin-bottom: 18px;
+        margin-bottom: 14px;
+      }
+      .workspace.with-camera {
+        gap: 12px;
       }
       .control-pad {
         grid-template-columns: repeat(3, minmax(74px, 1fr));
@@ -637,7 +842,8 @@ _INDEX_HTML = """<!doctype html>
 <body tabindex="0">
   <main>
     <h1>URLab Web Control</h1>
-    <section class="control-pad" aria-label="Robot movement controls">
+    <div class="workspace<!-- URLAB_CAMERA_CLASS -->">
+      <section class="control-pad" aria-label="Robot movement controls">
       <button class="control-button strafe-left" type="button" data-key="q" aria-pressed="false">
         <span class="key">Q</span>
         <span class="label">Strafe L</span>
@@ -662,17 +868,184 @@ _INDEX_HTML = """<!doctype html>
         <span class="key">D</span>
         <span class="label">Turn R</span>
       </button>
+      <button class="control-button dash" type="button" data-key="shift" aria-pressed="false">
+        <span class="key">Shift</span>
+        <span class="label">Dash</span>
+      </button>
       <button class="control-button brake" type="button" data-key="space" aria-pressed="false">
         <span class="key">Space</span>
         <span class="label">Brake</span>
       </button>
-    </section>
+      </section>
+      <!-- URLAB_CAMERA_PANEL -->
+    </div>
   </main>
   <script>
     const keys = {w:false,s:false,q:false,e:false,a:false,d:false,space:false,shift:false};
     const activeSources = new Map();
     const buttons = Array.from(document.querySelectorAll("[data-key]"));
+    const cameraTabs = document.getElementById("camera-tabs");
+    const cameraFps = document.getElementById("camera-fps");
+    const cameraImage = document.getElementById("camera-image");
     let timer = null;
+    let selectedCamera = null;
+    let cameraStates = new Map();
+    let cameraDisplayStates = new Map();
+    let streamRevision = 0;
+    let previousCameraFrames = null;
+    let previousCameraSampleAt = null;
+
+    function cameraUrl(cameraName, revision) {
+      return `/api/camera/stream.mjpg?camera=${encodeURIComponent(cameraName)}&view=${revision}`;
+    }
+
+    function closeCameraStream() {
+      streamRevision += 1;
+      cameraImage.removeAttribute("src");
+      const frame = cameraImage.closest(".camera-frame");
+      if (frame) frame.classList.add("camera-off");
+    }
+
+    function openSelectedCameraStream() {
+      if (!selectedCamera || cameraDisplayStates.get(selectedCamera) === false) {
+        closeCameraStream();
+        return;
+      }
+      closeCameraStream();
+      const revision = ++streamRevision;
+      requestAnimationFrame(() => {
+        if (
+          revision !== streamRevision ||
+          !selectedCamera ||
+          cameraDisplayStates.get(selectedCamera) === false
+        ) return;
+        cameraImage.src = cameraUrl(selectedCamera, revision);
+        const frame = cameraImage.closest(".camera-frame");
+        if (frame) frame.classList.remove("camera-off");
+      });
+    }
+
+    function selectCamera(cameraName) {
+      if (!cameraStates.has(cameraName) || cameraName === selectedCamera) return;
+      closeCameraStream();
+      selectedCamera = cameraName;
+      previousCameraFrames = null;
+      previousCameraSampleAt = null;
+      renderCameraTabs();
+      updateSelectedCameraStatus();
+      openSelectedCameraStream();
+    }
+
+    function toggleCameraDisplay(cameraName) {
+      if (!cameraStates.has(cameraName)) return;
+      const displayed = cameraDisplayStates.get(cameraName) !== false;
+      cameraDisplayStates.set(cameraName, !displayed);
+      if (cameraName === selectedCamera) {
+        if (displayed) closeCameraStream();
+        else openSelectedCameraStream();
+        previousCameraFrames = null;
+        previousCameraSampleAt = null;
+      }
+      renderCameraTabs();
+      updateSelectedCameraStatus();
+    }
+
+    function renderCameraTabs() {
+      if (!cameraTabs) return;
+      cameraTabs.replaceChildren();
+      for (const [cameraName, status] of cameraStates) {
+        const displayed = cameraDisplayStates.get(cameraName) !== false;
+        const tab = document.createElement("div");
+        tab.className = `camera-tab${cameraName === selectedCamera ? " selected" : ""}`;
+        const select = document.createElement("button");
+        select.type = "button";
+        select.className = "camera-select";
+        select.textContent = cameraName;
+        const mode = document.createElement("span");
+        mode.className = "camera-mode";
+        mode.textContent = status.mode || "camera";
+        select.appendChild(mode);
+        select.addEventListener("click", () => selectCamera(cameraName));
+        const power = document.createElement("button");
+        power.type = "button";
+        power.className = "camera-power";
+        power.textContent = "\u23fb";
+        power.title = displayed ? `Hide ${cameraName} preview` : `Show ${cameraName} preview`;
+        power.setAttribute("aria-label", power.title);
+        power.setAttribute("aria-pressed", String(displayed));
+        power.addEventListener("click", () => toggleCameraDisplay(cameraName));
+        tab.append(select, power);
+        cameraTabs.appendChild(tab);
+      }
+    }
+
+    function updateSelectedCameraStatus() {
+      if (!cameraFps || !selectedCamera) return;
+      const status = cameraStates.get(selectedCamera);
+      if (!status) return;
+      const displayed = cameraDisplayStates.get(selectedCamera) !== false;
+      const frame = cameraImage.closest(".camera-frame");
+      if (frame) frame.classList.toggle("camera-off", !displayed);
+      if (!displayed) {
+        cameraFps.textContent = "HIDDEN";
+        previousCameraFrames = null;
+        previousCameraSampleAt = null;
+        return;
+      }
+      const currentFrames = Number(status.encoded_frames);
+      const sampledAt = performance.now();
+      if (
+        Number.isFinite(currentFrames) &&
+        previousCameraFrames !== null &&
+        previousCameraSampleAt !== null &&
+        currentFrames >= previousCameraFrames
+      ) {
+        const elapsedSeconds = (sampledAt - previousCameraSampleAt) / 1000;
+        const measuredFps = elapsedSeconds > 0
+          ? (currentFrames - previousCameraFrames) / elapsedSeconds
+          : 0;
+        cameraFps.textContent = `${measuredFps.toFixed(1)} FPS`;
+      } else {
+        cameraFps.textContent = "-- FPS";
+      }
+      previousCameraFrames = Number.isFinite(currentFrames) ? currentFrames : null;
+      previousCameraSampleAt = sampledAt;
+    }
+
+    async function updateCameraInventory() {
+      if (!cameraTabs) return;
+      try {
+        const response = await fetch("/api/cameras", {cache: "no-store"});
+        if (!response.ok) throw new Error(`camera inventory ${response.status}`);
+        const inventory = await response.json();
+        cameraStates = new Map(
+          (inventory.cameras || []).map(status => [status.camera, status])
+        );
+        for (const cameraName of cameraStates.keys()) {
+          if (!cameraDisplayStates.has(cameraName)) {
+            cameraDisplayStates.set(cameraName, true);
+          }
+        }
+        let selectionChanged = false;
+        if (!selectedCamera || !cameraStates.has(selectedCamera)) {
+          selectedCamera = cameraStates.has(inventory.default_camera)
+            ? inventory.default_camera
+            : (cameraStates.keys().next().value || null);
+          selectionChanged = true;
+          previousCameraFrames = null;
+          previousCameraSampleAt = null;
+        }
+        renderCameraTabs();
+        updateSelectedCameraStatus();
+        if (selectionChanged) openSelectedCameraStream();
+      } catch (_error) {
+        cameraFps.textContent = "-- FPS";
+        previousCameraFrames = null;
+        previousCameraSampleAt = null;
+      } finally {
+        window.setTimeout(updateCameraInventory, 1000);
+      }
+    }
 
     function keyName(event) {
       if (event.code === "Space") return "space";
@@ -799,6 +1172,7 @@ _INDEX_HTML = """<!doctype html>
     window.addEventListener("blur", release);
     window.addEventListener("beforeunload", release);
     syncButtons();
+    updateCameraInventory();
     document.body.focus();
   </script>
 </body>

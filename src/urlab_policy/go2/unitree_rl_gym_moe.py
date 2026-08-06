@@ -152,17 +152,17 @@ def load_go2_moe_policy(policy_path: str | Path, *, device: str = "cpu") -> Any:
 
 def reset_go2_moe_history(
     policy: Any,
-    observation: Sequence[float] | None = None,
+    observation: Sequence[float] | Sequence[Sequence[float]] | None = None,
     *,
     device: str = "cpu",
 ) -> bool:
-    """Prime a TorchScript MoE policy history with repeated observations."""
+    """Prime TorchScript MoE policy history for one robot or a robot batch."""
     import torch
 
     obs = (
-        np.zeros(GO2_MOE_OBS_SIZE, dtype=np.float32)
+        np.zeros((1, GO2_MOE_OBS_SIZE), dtype=np.float32)
         if observation is None
-        else _checked_array(observation, "observation", GO2_MOE_OBS_SIZE)
+        else _normalize_observation_input(observation)[0]
     )
     history_length = int(getattr(policy, "history_length", GO2_MOE_HISTORY_LENGTH))
     current = getattr(policy, "history", None)
@@ -170,7 +170,7 @@ def reset_go2_moe_history(
     history = (
         torch.from_numpy(obs)
         .to(device=target_device, dtype=torch.float32)
-        .view(1, 1, GO2_MOE_OBS_SIZE)
+        .view(obs.shape[0], 1, GO2_MOE_OBS_SIZE)
         .repeat(1, history_length, 1)
     )
 
@@ -185,16 +185,17 @@ def reset_go2_moe_history(
 
 def infer_go2_moe_action(
     policy: Any,
-    observation: Sequence[float],
+    observation: Sequence[float] | Sequence[Sequence[float]],
     *,
     device: str = "cpu",
-) -> tuple[np.ndarray, Go2MoeDiagnostics]:
-    """Run the MoE policy and return its action plus expert diagnostics."""
+) -> tuple[np.ndarray, Go2MoeDiagnostics] | tuple[np.ndarray, list[Go2MoeDiagnostics]]:
+    """Run the MoE policy for one robot or a robot batch."""
     import torch
 
-    obs = _checked_array(observation, "observation", GO2_MOE_OBS_SIZE)
+    obs, single = _normalize_observation_input(observation)
+    batch_size = int(obs.shape[0])
     with torch.no_grad():
-        tensor = torch.from_numpy(obs).to(device=device, dtype=torch.float32).unsqueeze(0)
+        tensor = torch.from_numpy(obs).to(device=device, dtype=torch.float32)
         raw_output = policy(tensor)
 
     action_tensor = raw_output
@@ -205,19 +206,52 @@ def infer_go2_moe_action(
         action_tensor = raw_output[0]
         extra = raw_output[1] if len(raw_output) > 1 else None
 
-    action = _torch_output_to_numpy(action_tensor, "action")
-    if action.shape != (GO2_MOE_ACTION_SIZE,):
+    actions = _torch_policy_output_to_numpy(
+        action_tensor,
+        "action",
+        batch_size=batch_size,
+    )
+    if actions.shape != (batch_size, GO2_MOE_ACTION_SIZE):
         raise RuntimeError(
-            f"policy returned action shape {action.shape}, expected (12,)"
+            "policy returned action shape "
+            f"{actions.shape}, expected ({batch_size}, {GO2_MOE_ACTION_SIZE})"
         )
 
-    weights = np.zeros(0, dtype=np.float32)
-    latent = np.zeros(0, dtype=np.float32)
+    weights = np.zeros((batch_size, 0), dtype=np.float32)
+    latent = np.zeros((batch_size, 0), dtype=np.float32)
     if isinstance(extra, tuple) and len(extra) >= 2:
-        weights = _torch_output_to_numpy(extra[0], "expert_weights")
-        latent = _torch_output_to_numpy(extra[1], "latent")
+        weights = _torch_policy_output_to_numpy(
+            extra[0],
+            "expert_weights",
+            batch_size=batch_size,
+        )
+        latent = _torch_policy_output_to_numpy(
+            extra[1],
+            "latent",
+            batch_size=batch_size,
+        )
+        if weights.shape[0] != batch_size:
+            raise RuntimeError(
+                "policy returned expert_weights shape "
+                f"{weights.shape}, expected first dimension {batch_size}"
+            )
+        if latent.shape[0] != batch_size:
+            raise RuntimeError(
+                "policy returned latent shape "
+                f"{latent.shape}, expected first dimension {batch_size}"
+            )
 
-    return action, Go2MoeDiagnostics(expert_weights=weights, latent=latent)
+    diagnostics = [
+        Go2MoeDiagnostics(
+            expert_weights=np.asarray(weights[i], dtype=np.float32),
+            latent=np.asarray(latent[i], dtype=np.float32),
+        )
+        for i in range(batch_size)
+    ]
+    actions = actions.astype(np.float32, copy=False)
+    if single:
+        return actions[0], diagnostics[0]
+    return actions, diagnostics
 
 
 def _ordered_joint_state(
@@ -276,12 +310,39 @@ def _checked_array(values: Sequence[float], name: str, size: int) -> np.ndarray:
     return arr
 
 
-def _torch_output_to_numpy(value: Any, name: str) -> np.ndarray:
+def _normalize_observation_input(
+    values: Sequence[float] | Sequence[Sequence[float]],
+) -> tuple[np.ndarray, bool]:
+    arr = np.asarray(values, dtype=np.float32)
+    if arr.shape == (GO2_MOE_OBS_SIZE,):
+        return arr.reshape(1, GO2_MOE_OBS_SIZE), True
+    if arr.ndim == 2 and arr.shape[1:] == (GO2_MOE_OBS_SIZE,) and arr.shape[0] > 0:
+        return arr, False
+    if arr.ndim == 2 and arr.shape[1:] == (GO2_MOE_OBS_SIZE,):
+        raise ValueError(
+            "observation must have shape "
+            f"({GO2_MOE_OBS_SIZE},) or (N, {GO2_MOE_OBS_SIZE}) with N > 0, "
+            f"got {arr.shape}"
+        )
+    raise ValueError(
+        "observation must have shape "
+        f"({GO2_MOE_OBS_SIZE},) or (N, {GO2_MOE_OBS_SIZE}), got {arr.shape}"
+    )
+
+
+def _torch_policy_output_to_numpy(
+    value: Any,
+    name: str,
+    *,
+    batch_size: int,
+) -> np.ndarray:
     if not hasattr(value, "detach"):
         raise RuntimeError(f"policy returned non-tensor {name}: {type(value)!r}")
     arr = value.detach().cpu().numpy().astype(np.float32)
-    if arr.ndim >= 1 and arr.shape[0] == 1:
-        arr = arr.squeeze(0)
+    if arr.ndim == 1 and batch_size == 1:
+        arr = arr.reshape(1, -1)
+    if arr.ndim < 2:
+        raise RuntimeError(f"policy returned {name} shape {arr.shape}, expected batch")
     return np.asarray(arr, dtype=np.float32)
 
 

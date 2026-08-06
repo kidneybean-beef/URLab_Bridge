@@ -159,15 +159,18 @@ class URLabCameraView:
 
     `latest_frame` is None until the first frame arrives (streaming mode)
     or until the first `step(include_cameras=True)` reply populates it.
-    Shape depends on mode: `(H, W, 4)` for real, `(H, W)` for depth /
-    semantic / instance.
+    Shape depends on mode: `(H, W, 4)` for real / semantic / instance and
+    `(H, W)` for depth. Segmentation channels remain in wire-order BGRA.
     """
 
     name: str
     mode: CameraMode
     resolution: Tuple[int, int]  # (width, height)
     fovy: float
+    depth_near_cm: float = 10.0
+    depth_far_cm: float = 10000.0
     owner: Optional[str] = None
+    enabled: bool = True
     dtype: np.dtype = field(default_factory=lambda: np.dtype(np.uint8))
     latest_frame: Optional[np.ndarray] = None
     sim_time: Optional[float] = None
@@ -205,7 +208,10 @@ class URLabCameraView:
             mode=mode,
             resolution=(int(w), int(h)),
             fovy=float(payload.get("fovy", 0.0)),
+            depth_near_cm=float(payload.get("depth_near_cm", 10.0)),
+            depth_far_cm=float(payload.get("depth_far_cm", 10000.0)),
             owner=owner,
+            enabled=bool(payload.get("enabled", True)),
             dtype=dtype,
         )
         # Stash the per-camera ZMQ endpoint + topic from the handshake so

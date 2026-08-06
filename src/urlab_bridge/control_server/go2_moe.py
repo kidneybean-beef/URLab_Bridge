@@ -10,6 +10,7 @@ from typing import Any
 
 import numpy as np
 
+from .commands import TwistSlewConfig, TwistSlewLimiter
 from .metrics import ControlLoopMetrics
 from .models import WebPolicyTarget
 
@@ -52,22 +53,97 @@ class _PolicyState:
     def __init__(
         self,
         *,
+        articulation: str,
         prefix: str,
         art: Any,
         command_source: Any,
-        policy: Any,
         action_size: int,
+        command_slew_config: TwistSlewConfig,
     ) -> None:
+        self.articulation = articulation
         self.prefix = prefix
         self.art = art
         self.command_source = command_source
-        self.policy = policy
+        self.command_limiter = TwistSlewLimiter(command_slew_config)
+        self.desired_command = (0.0, 0.0, 0.0)
+        self.applied_command = (0.0, 0.0, 0.0)
         self.last_action = np.zeros(action_size, dtype=np.float32)
         self.current_pose: dict[str, float] = {}
         self.previous_target: dict[str, float] = {}
         self.pending_previous_target: dict[str, float] | None = None
         self.pending_last_action: Any | None = None
         self.iters = 0
+
+
+class Go2MoePolicyRuntime:
+    def __init__(
+        self,
+        *,
+        policy_path: str,
+        device: str,
+        dependencies: Go2MoeDependencies,
+        log: logging.Logger = logger,
+    ) -> None:
+        self.policy_path = policy_path
+        self.device = device
+        self.dependencies = dependencies
+        self._logger = log
+        self._policy: Any | None = None
+
+    def load(self, states: Sequence[_PolicyState]) -> None:
+        load_policy = self.dependencies.require("load_policy")
+        self._policy = load_policy(self.policy_path, device=self.device)
+        self._logger.info(
+            "Go2 MoE policy runtime: policy=%s device=%s robots=%d batching=unified",
+            self.policy_path,
+            self.device,
+            len(states),
+        )
+
+    def reset_histories(
+        self,
+        states: Sequence[_PolicyState],
+        observations: Sequence[Any],
+    ) -> None:
+        reset_history = self.dependencies.require("reset_history")
+        reset_history(
+            self._require_policy(),
+            np.stack(observations).astype(np.float32, copy=False),
+            device=self.device,
+        )
+
+    def infer(
+        self,
+        states: Sequence[_PolicyState],
+        observations: Sequence[Any],
+    ) -> tuple[list[Any], list[Any]]:
+        infer_action = self.dependencies.require("infer_action")
+        actions, diagnostics = infer_action(
+            self._require_policy(),
+            np.stack(observations).astype(np.float32, copy=False),
+            device=self.device,
+        )
+        actions_array = np.asarray(actions, dtype=np.float32)
+        if actions_array.ndim == 1 and len(states) == 1:
+            actions_array = actions_array.reshape(1, -1)
+        diagnostics_list = (
+            list(diagnostics)
+            if isinstance(diagnostics, (list, tuple))
+            else [diagnostics]
+        )
+        action_list = [actions_array[i] for i in range(len(states))]
+        if len(action_list) != len(states) or len(diagnostics_list) != len(states):
+            raise RuntimeError(
+                "policy result count does not match robot count: "
+                f"actions={len(action_list)} diagnostics={len(diagnostics_list)} "
+                f"robots={len(states)}"
+            )
+        return action_list, diagnostics_list
+
+    def _require_policy(self) -> Any:
+        if self._policy is None:
+            raise RuntimeError("Go2 MoE policy runtime has not loaded a policy")
+        return self._policy
 
 
 class Go2MoeControlLoop:
@@ -80,6 +156,7 @@ class Go2MoeControlLoop:
         *,
         metrics: ControlLoopMetrics | None = None,
         metrics_log_interval_s: float | None = None,
+        post_step_hook: Callable[[Sequence[Any]], None] | None = None,
         clock: Callable[[], float] = time.perf_counter,
         log: logging.Logger = logger,
     ) -> None:
@@ -97,12 +174,21 @@ class Go2MoeControlLoop:
         )
         self._clock = clock
         self._logger = log
+        self._post_step_hook = post_step_hook
         self._last_metrics_log_at: float | None = None
+        self._command_dt = 1.0 / float(args.freq)
+        self._command_slew_config = TwistSlewConfig(
+            accel_vx=float(getattr(args, "cmd_accel_vx", 2.0)),
+            accel_vy=float(getattr(args, "cmd_accel_vy", 1.0)),
+            accel_yaw=float(getattr(args, "cmd_accel_yaw", 3.14)),
+            decel_vx=float(getattr(args, "cmd_decel_vx", 3.0)),
+            decel_vy=float(getattr(args, "cmd_decel_vy", 1.5)),
+            decel_yaw=float(getattr(args, "cmd_decel_yaw", 4.71)),
+        )
 
     def run(self, client: Any) -> int:
         deps = self.dependencies
         select_articulation = deps.require("select_articulation")
-        load_policy = deps.require("load_policy")
         resolve_torque_limits = deps.require("resolve_torque_limits")
 
         prefixes: tuple[str, ...] = tuple(
@@ -125,7 +211,7 @@ class Go2MoeControlLoop:
             self._logger.info(
                 "multi-web MoE params: targets=%s freq=%.1fHz action_clip=%.1f "
                 "target_slew=%s warmup_steps=%d push_gains=%s kp=%.3f kv=%.3f "
-                "torque_limits=%s",
+                "torque_limits=%s command_accel=%s command_decel=%s",
                 list(prefixes),
                 self.args.freq,
                 self.args.max_action_abs,
@@ -137,6 +223,8 @@ class Go2MoeControlLoop:
                 self.args.kp,
                 self.args.kv,
                 np.round(torque_limits, 3).tolist(),
+                self._command_slew_config.acceleration,
+                self._command_slew_config.deceleration,
             )
             if self.limit_mode.raw_policy:
                 self._logger.warning(
@@ -149,14 +237,14 @@ class Go2MoeControlLoop:
                 strict=True,
             ):
                 art = client.articulations[prefix]
-                policy = load_policy(self.args.policy, device=self.args.device)
                 states.append(
                     _PolicyState(
+                        articulation=target.articulation,
                         prefix=prefix,
                         art=art,
                         command_source=command_source,
-                        policy=policy,
                         action_size=deps.action_size,
+                        command_slew_config=self._command_slew_config,
                     )
                 )
                 self._logger.info(
@@ -168,6 +256,13 @@ class Go2MoeControlLoop:
                     len(art.actuators),
                     art.has_free_base,
                 )
+            policy_runtime = Go2MoePolicyRuntime(
+                policy_path=self.args.policy,
+                device=self.args.device,
+                dependencies=deps,
+                log=self._logger,
+            )
+            policy_runtime.load(states)
 
             for state in states:
                 client.runtime.set_control_source("ui", articulation=state.prefix)
@@ -200,8 +295,14 @@ class Go2MoeControlLoop:
                     format_pose_sample(state.current_pose),
                 )
 
-            self._prime_policy_histories(client, states)
-            iters = self._run_control_loop(client, states, prefixes, lambda: stop)
+            self._prime_policy_histories(client, states, policy_runtime)
+            iters = self._run_control_loop(
+                client,
+                states,
+                prefixes,
+                policy_runtime,
+                lambda: stop,
+            )
         finally:
             self._teardown(client, states, switched_prefixes)
 
@@ -264,24 +365,37 @@ class Go2MoeControlLoop:
         }
         state.previous_target = dict(state.current_pose)
 
-    def _prime_policy_histories(self, client: Any, states: list[_PolicyState]) -> None:
+    def _prime_policy_histories(
+        self,
+        client: Any,
+        states: list[_PolicyState],
+        policy_runtime: Go2MoePolicyRuntime,
+    ) -> None:
         deps = self.dependencies
         sync_runtime_ui = deps.require("sync_command_source_runtime_ui")
         build_observation = deps.require("build_observation")
-        reset_history = deps.require("reset_history")
 
+        observations: list[Any] = []
+        commands: list[Any] = []
         for state in states:
             sync_runtime_ui(state.command_source, client, state.prefix)
-            command = state.command_source.poll()
+            state.desired_command = tuple(state.command_source.poll())
+            command = state.command_limiter.reset()
+            state.applied_command = command
             obs = build_observation(
                 state.art,
                 command=command,
                 last_action=state.last_action,
             )
-            reset_history(state.policy, obs, device=self.args.device)
+            observations.append(obs)
+            commands.append(command)
+
+        policy_runtime.reset_histories(states, observations)
+        for state, command in zip(states, commands, strict=True):
             self._logger.info(
-                "primed MoE history for %s; command=%s",
+                "primed MoE history for %s; desired_command=%s applied_command=%s",
                 state.prefix,
+                np.round(state.desired_command, 4).tolist(),
                 np.round(command, 4).tolist(),
             )
 
@@ -290,6 +404,7 @@ class Go2MoeControlLoop:
         client: Any,
         states: list[_PolicyState],
         prefixes: tuple[str, ...],
+        policy_runtime: Go2MoePolicyRuntime,
         should_stop: Callable[[], bool],
     ) -> int:
         iters = 0
@@ -321,8 +436,28 @@ class Go2MoeControlLoop:
 
             tick_start = self._clock()
             policy_start = self._clock()
+            commands: list[Any] = []
+            observations: list[Any] = []
             for state in states:
-                self._compute_and_stage_state(client, state)
+                command, obs = self._prepare_state_observation(client, state)
+                commands.append(command)
+                observations.append(obs)
+            actions, diagnostics = policy_runtime.infer(states, observations)
+            for state, command, obs, action, state_diagnostics in zip(
+                states,
+                commands,
+                observations,
+                actions,
+                diagnostics,
+                strict=True,
+            ):
+                self._stage_state_action(
+                    state,
+                    command=command,
+                    obs=obs,
+                    action=action,
+                    diagnostics=state_diagnostics,
+                )
             policy_duration_s = max(0.0, self._clock() - policy_start)
 
             step_start = self._clock()
@@ -344,6 +479,9 @@ class Go2MoeControlLoop:
                 state.pending_previous_target = None
                 state.pending_last_action = None
                 state.iters += 1
+
+            if self._post_step_hook is not None:
+                self._post_step_hook(states)
 
             command_statuses = _command_statuses_by_prefix(states)
             self.metrics.record_tick(
@@ -396,19 +534,15 @@ class Go2MoeControlLoop:
             ages,
         )
 
-    def _compute_and_stage_state(self, client: Any, state: _PolicyState) -> None:
+    def _prepare_state_observation(
+        self,
+        client: Any,
+        state: _PolicyState,
+    ) -> tuple[Any, Any]:
         deps = self.dependencies
         safety_abort_reason = deps.require("safety_abort_reason")
         sync_runtime_ui = deps.require("sync_command_source_runtime_ui")
         build_observation = deps.require("build_observation")
-        infer_action = deps.require("infer_action")
-        action_abort_reason = deps.require("action_abort_reason")
-        apply_action_limit = deps.require("apply_action_limit")
-        action_to_target_pose = deps.require("action_to_target_pose")
-        validate_target_pose = deps.require("validate_target_pose")
-        maybe_rate_limit_target_pose = deps.require("maybe_rate_limit_target_pose")
-        target_pose_to_action = deps.require("target_pose_to_action")
-        target_delta_abs_max = deps.require("target_delta_abs_max")
 
         reason = safety_abort_reason(state.art, min_base_z=self.args.min_base_z)
         if reason is not None:
@@ -418,13 +552,38 @@ class Go2MoeControlLoop:
         if callable(stop_if_stale):
             stop_if_stale()
         sync_runtime_ui(state.command_source, client, state.prefix)
-        command = state.command_source.poll()
+        state.desired_command = tuple(state.command_source.poll())
+        command = state.command_limiter.update(
+            state.desired_command,
+            dt=self._command_dt,
+            brake=_command_source_brake_requested(state.command_source),
+        )
+        state.applied_command = command
         obs = build_observation(
             state.art,
             command=command,
             last_action=state.last_action,
         )
-        action, diagnostics = infer_action(state.policy, obs, device=self.args.device)
+        return command, obs
+
+    def _stage_state_action(
+        self,
+        state: _PolicyState,
+        *,
+        command: Any,
+        obs: Any,
+        action: Any,
+        diagnostics: Any,
+    ) -> None:
+        deps = self.dependencies
+        action_abort_reason = deps.require("action_abort_reason")
+        apply_action_limit = deps.require("apply_action_limit")
+        action_to_target_pose = deps.require("action_to_target_pose")
+        validate_target_pose = deps.require("validate_target_pose")
+        maybe_rate_limit_target_pose = deps.require("maybe_rate_limit_target_pose")
+        target_pose_to_action = deps.require("target_pose_to_action")
+        target_delta_abs_max = deps.require("target_delta_abs_max")
+
         reason = action_abort_reason(action, max_abs=self.args.max_action_abs)
         if reason is not None:
             if self.limit_mode.action_limit_mode == "abort":
@@ -457,9 +616,11 @@ class Go2MoeControlLoop:
 
         if state.iters == 0:
             self._logger.info(
-                "%s cmd=%s obs_norm=%.3f action[min,max]=[%.3f, %.3f] "
+                "%s desired_cmd=%s applied_cmd=%s obs_norm=%.3f "
+                "action[min,max]=[%.3f, %.3f] "
                 "raw_delta=%.3f applied_delta=%.3f weights=%s",
                 state.prefix,
+                np.round(state.desired_command, 3).tolist(),
                 np.round(command, 3).tolist(),
                 float(np.linalg.norm(obs)),
                 float(np.min(action)),
@@ -508,6 +669,16 @@ def _any_quit_requested(states: list[_PolicyState]) -> bool:
     )
 
 
+def _command_source_brake_requested(command_source: Any) -> bool:
+    brake = getattr(command_source, "brake_requested", None)
+    if callable(brake):
+        return bool(brake())
+    if brake is not None:
+        return bool(brake)
+    status_fn = getattr(command_source, "status", None)
+    return bool(status_fn().get("brake", False)) if callable(status_fn) else False
+
+
 def _command_statuses_by_prefix(states: list[_PolicyState]) -> dict[str, dict[str, Any]]:
     statuses: dict[str, dict[str, Any]] = {}
     for state in states:
@@ -524,5 +695,10 @@ def _command_statuses_by_prefix(states: list[_PolicyState]) -> dict[str, dict[st
             }
         if not status.get("articulation"):
             status["articulation"] = state.prefix
+        status["desired_twist"] = list(state.desired_command)
+        status["applied_twist"] = list(state.applied_command)
+        status["active"] = bool(status.get("active")) or any(
+            abs(axis) > 1e-6 for axis in state.applied_command
+        )
         statuses[state.prefix] = status
     return statuses

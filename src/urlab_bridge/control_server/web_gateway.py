@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from http.server import ThreadingHTTPServer
 from typing import Any
 
@@ -27,12 +27,16 @@ class _WebServerHandle:
         thread_factory: Callable[..., Any],
         event_factory: Callable[[], Any],
         metrics_provider: Callable[[], Any] | object | None,
+        camera_stream: object | None,
     ) -> None:
         self.target = target
         self.command_source = command_source
+        handler_kwargs: dict[str, Any] = {"metrics_provider": metrics_provider}
+        if camera_stream is not None:
+            handler_kwargs["camera_stream"] = camera_stream
         self.server = server_factory(
             (bind, int(target.port)),
-            handler_factory(command_source, metrics_provider=metrics_provider),
+            handler_factory(command_source, **handler_kwargs),
         )
         self._stop_event = event_factory()
         interval_s = max(
@@ -75,6 +79,7 @@ class WebGateway:
         command_hub_factory: Callable[..., CommandHub] = CommandHub,
         command_source_factory: Callable[..., Any] | None = None,
         metrics_provider: Callable[[], Any] | object | None = None,
+        camera_streams: Mapping[str, object] | None = None,
         server_factory: Callable[..., Any] = ThreadingHTTPServer,
         handler_factory: Callable[..., Any] = make_handler,
         thread_factory: Callable[..., Any] = threading.Thread,
@@ -92,6 +97,7 @@ class WebGateway:
         )
         self._command_source_factory = command_source_factory
         self._metrics_provider = metrics_provider
+        self._camera_streams = dict(camera_streams or {})
         self._server_factory = server_factory
         self._handler_factory = handler_factory
         self._thread_factory = thread_factory
@@ -129,6 +135,7 @@ class WebGateway:
                 thread_factory=self._thread_factory,
                 event_factory=self._event_factory,
                 metrics_provider=self._metrics_provider,
+                camera_stream=self._camera_streams.get(target.articulation),
             )
             self._target_sources.append((target, command_source))
             self._handles.append(handle)

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from urlab_bridge.web_control import (
     KeyState,
@@ -18,6 +19,76 @@ logger = logging.getLogger(__name__)
 
 _KEY_FIELDS = ("w", "s", "q", "e", "a", "d", "space", "shift")
 _ZERO_TWIST = (0.0, 0.0, 0.0)
+
+
+@dataclass(frozen=True)
+class TwistSlewConfig:
+    accel_vx: float = 2.0
+    accel_vy: float = 1.0
+    accel_yaw: float = 3.14
+    decel_vx: float = 3.0
+    decel_vy: float = 1.5
+    decel_yaw: float = 4.71
+
+    def __post_init__(self) -> None:
+        for name, value in vars(self).items():
+            if not math.isfinite(float(value)) or float(value) <= 0.0:
+                raise ValueError(f"{name} must be a finite value greater than zero")
+
+    @property
+    def acceleration(self) -> tuple[float, float, float]:
+        return (self.accel_vx, self.accel_vy, self.accel_yaw)
+
+    @property
+    def deceleration(self) -> tuple[float, float, float]:
+        return (self.decel_vx, self.decel_vy, self.decel_yaw)
+
+
+class TwistSlewLimiter:
+    """Apply deterministic per-axis acceleration limits to policy commands."""
+
+    def __init__(
+        self,
+        config: TwistSlewConfig | None = None,
+        *,
+        initial: Sequence[float] = _ZERO_TWIST,
+    ) -> None:
+        self.config = config or TwistSlewConfig()
+        self._current = _coerce_twist(initial)
+
+    @property
+    def current(self) -> tuple[float, float, float]:
+        return self._current
+
+    def reset(self, value: Sequence[float] = _ZERO_TWIST) -> tuple[float, float, float]:
+        self._current = _coerce_twist(value)
+        return self._current
+
+    def update(
+        self,
+        target: Sequence[float],
+        *,
+        dt: float,
+        brake: bool = False,
+    ) -> tuple[float, float, float]:
+        if brake:
+            return self.reset()
+        step_dt = float(dt)
+        if not math.isfinite(step_dt) or step_dt < 0.0:
+            raise ValueError("dt must be a finite value greater than or equal to zero")
+
+        desired = _coerce_twist(target)
+        self._current = tuple(
+            _step_slew_axis(current, goal, accel, decel, step_dt)
+            for current, goal, accel, decel in zip(
+                self._current,
+                desired,
+                self.config.acceleration,
+                self.config.deceleration,
+                strict=True,
+            )
+        )
+        return self._current
 
 
 @dataclass(frozen=True)
@@ -64,7 +135,7 @@ class _RobotCommandState:
         self.last_command_at: float | None = None
         self.last_twist: tuple[float, float, float] = _ZERO_TWIST
         self.last_keys = KeyState()
-        self.last_ui_sync_state: tuple[tuple[str, float | bool], ...] | None = None
+        self.last_ui_sync_state: tuple[tuple[str, Any], ...] | None = None
         self.ui_sync_disabled = False
         self.active = False
         self.stale = False
@@ -113,6 +184,24 @@ class CommandHub:
             state.stale = False
             return self._snapshot_locked(state).to_dict()
 
+    def apply_twist(
+        self,
+        articulation: str,
+        twist: Sequence[float],
+        *,
+        source: str = "ros2",
+    ) -> dict[str, Any]:
+        command = _coerce_twist(twist)
+        with self._lock:
+            state = self._ensure_state(str(articulation), source=source)
+            state.source = str(source)
+            state.last_keys = KeyState()
+            state.last_twist = command
+            state.last_command_at = self._now()
+            state.active = command != _ZERO_TWIST
+            state.stale = False
+            return self._snapshot_locked(state).to_dict()
+
     def release(self, articulation: str) -> dict[str, Any]:
         with self._lock:
             state = self._ensure_state(str(articulation), source="web")
@@ -137,6 +226,9 @@ class CommandHub:
         with self._lock:
             state = self._ensure_state(str(articulation), source="web")
             return tuple(state.last_twist)
+
+    def brake_requested(self, articulation: str) -> bool:
+        return self.snapshot(articulation).brake
 
     def status(self, articulation: str) -> dict[str, Any]:
         return self.snapshot(articulation).to_dict()
@@ -253,10 +345,21 @@ class RobotCommandPort:
     def quit_requested(self) -> bool:
         return self._quit_requested
 
+    @property
+    def brake_requested(self) -> bool:
+        return self.hub.brake_requested(self.articulation)
+
     def apply_control(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         return self.hub.apply_control(
             self.articulation,
             payload,
+            source=self.source,
+        )
+
+    def apply_twist(self, twist: Sequence[float]) -> dict[str, Any]:
+        return self.hub.apply_twist(
+            self.articulation,
+            twist,
             source=self.source,
         )
 
@@ -281,3 +384,39 @@ class RobotCommandPort:
 
 def _any_key_pressed(keys: KeyState) -> bool:
     return any(bool(getattr(keys, name)) for name in _KEY_FIELDS)
+
+
+def _coerce_twist(value: Sequence[float]) -> tuple[float, float, float]:
+    if len(value) != 3:
+        raise ValueError(f"twist must contain exactly three values, got {len(value)}")
+    twist = tuple(float(axis) for axis in value)
+    if not all(math.isfinite(axis) for axis in twist):
+        raise ValueError("twist values must be finite")
+    return twist
+
+
+def _step_slew_axis(
+    current: float,
+    target: float,
+    accel: float,
+    decel: float,
+    dt: float,
+) -> float:
+    if current == target or dt == 0.0:
+        return target if current == target else current
+
+    if current * target < 0.0:
+        time_to_zero = abs(current) / decel
+        if dt <= time_to_zero:
+            return _move_toward(current, 0.0, decel * dt)
+        return _move_toward(0.0, target, accel * (dt - time_to_zero))
+
+    rate = accel if abs(target) > abs(current) else decel
+    return _move_toward(current, target, rate * dt)
+
+
+def _move_toward(current: float, target: float, max_delta: float) -> float:
+    delta = target - current
+    if abs(delta) <= max_delta:
+        return target
+    return current + math.copysign(max_delta, delta)

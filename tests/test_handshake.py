@@ -151,6 +151,8 @@ def test_camera_view_parsed_from_handshake(client):
     assert cam.mode is CameraMode.REAL
     assert cam.resolution == (320, 240)
     assert cam.fovy == pytest.approx(45.0)
+    assert cam.depth_near_cm == pytest.approx(12.5)
+    assert cam.depth_far_cm == pytest.approx(7500.0)
     assert cam.owner == "vx300s"
     assert cam.latest_frame is None
 
