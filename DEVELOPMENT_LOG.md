@@ -211,6 +211,275 @@ Developer notes:
 - `Go2MoeControlLoop` receives dependencies from the compatibility CLI so the
   package can be tested without importing every script helper directly.
 
+## 2026-07-17 - Per-Robot LAN RGB Camera Streaming
+
+- Added `CameraHub` and `MjpegCameraStream` to the central control server.
+- A configured robot camera is read from the existing `URLabClient`; camera
+  output never creates a second URLab session.
+- Camera workers encode the newest URLab RGBA frame as JPEG on a dedicated
+  thread. Old frames are dropped instead of queued, keeping camera latency and
+  memory bounded independently of the 50 Hz locomotion loop.
+- Extended each existing per-robot web server with:
+  - `GET /api/camera/stream.mjpg` for the browser MJPEG feed
+  - `GET /api/camera/status` for camera availability and frame age
+- Added an optional camera panel alongside the existing keyboard/touch controls.
+  Camera-enabled desktop pages place controls on the left and the stream on the
+  right, then stack controls above the stream below 900 px. Pages without a
+  configured camera retain their centered control layout and existing routes.
+- Exposed the existing left-Shift dash state as a holdable web control. The Dash
+  button uses the same command path and runtime limits as the physical key.
+- Added repeatable `--web-camera ARTICULATION:CAMERA` mappings plus
+  `--camera-fps` and `--camera-jpeg-quality` controls to
+  `run_go2_moe_multi_web.py`.
+- Declared Pillow in the optional `web-camera` dependency group. Importing the
+  control server without camera output does not import or require Pillow.
+
+Main files:
+
+- `src/urlab_bridge/control_server/cameras.py`
+- `src/urlab_bridge/control_server/models.py`
+- `src/urlab_bridge/control_server/server.py`
+- `src/urlab_bridge/control_server/web_gateway.py`
+- `src/urlab_bridge/web_control.py`
+- `scripts/run_go2_moe_multi_web.py`
+- `tests/test_control_server_cameras.py`
+- `tests/test_web_control.py`
+
+Developer notes:
+
+- Camera streaming must continue to use the session owned by `SessionManager`.
+- HTTP request threads only write already-encoded JPEG bytes; image encoding
+  belongs in `MjpegCameraStream`, never in the policy loop or request handler.
+- One camera can serve multiple browser connections without duplicating JPEG
+  encoding because all clients read the stream's latest encoded frame.
+- `--web-camera` uses the exact camera key exposed in the articulation's
+  `cameras` mapping. A missing camera fails before the control loop starts and
+  reports the available names.
+- Web JPEG encoding applies the standard linear-to-sRGB display transfer
+  function. `UMjCamera` captures `SCS_FinalToneCurveHDR` into a linear
+  `PF_B8G8R8A8` target, while UE applies the transfer function when displaying
+  that target itself. Keep URLab's raw camera array linear for policy and
+  vision consumers; display conversion belongs at the browser encoder.
+
+## 2026-07-20 - Smooth Per-Robot Twist Commands
+
+- Added a deterministic `TwistSlewLimiter` with independent acceleration and
+  deceleration rates for forward, lateral, and yaw commands.
+- Each Go2 policy state owns its limiter. Policy history starts at zero command,
+  and each 50 Hz policy observation advances the applied twist by one bounded
+  step toward the command source's desired twist.
+- Space is an explicit immediate brake: it resets all applied axes to zero in
+  the current policy tick instead of following the normal deceleration ramp.
+- Preserved the existing normal and dash velocity defaults. Added
+  `--cmd-accel-*` and `--cmd-decel-*` options for tuning only the transition
+  rates.
+- Added desired and applied twists to command diagnostics so command shaping
+  can be distinguished from browser input and policy output.
+
+Main files:
+
+- `src/urlab_bridge/control_server/commands.py`
+- `src/urlab_bridge/control_server/go2_moe.py`
+- `src/urlab_bridge/web_control.py`
+- `scripts/run_go2_moe_multi_web.py`
+- `tests/test_control_server_commands.py`
+- `tests/test_go2_moe_multi_web.py`
+
+Developer notes:
+
+- Keep command smoothing in the control server, after source polling and before
+  policy observation construction. UE remains responsible for simulation and
+  transport rather than controller-specific command shaping.
+- New command sources, including ROS2, should expose their desired twist and an
+  explicit brake state so they share this limiter without duplicating it.
+
+## 2026-07-20 - Concurrent Multi-Robot Camera Feeds
+
+- Confirmed the control server already keys camera streams by articulation, so
+  two robots may both expose a camera named `front_rgb` without sharing a web
+  stream or JPEG encoder.
+- Added regressions for repeated `--web-camera ARTICULATION:CAMERA` mappings and
+  for resolving same-named cameras to distinct articulation camera views.
+- Fixed URLab's dashboard preview lifetime separately in the plugin: switching
+  the selected articulation no longer disables a camera that is still required
+  by the network broadcaster.
+
+Main files:
+
+- `tests/test_control_server_cameras.py`
+- `tests/test_go2_moe_multi_web.py`
+
+Developer notes:
+
+- Camera identity in the control server is `(articulation, camera)`, not the
+  camera name alone.
+- Configure one repeated `--web-camera` mapping for each web-controlled robot.
+- Dashboard selection and browser streaming are independent consumers; changing
+  the selected or possessed robot must not determine which LAN streams remain
+  active.
+
+## 2026-07-28 - Measured Web Camera FPS
+
+- Added an FPS badge over each configured web camera feed.
+- The browser samples the existing camera status endpoint once per second and
+  derives FPS from the change in `encoded_frames` over monotonic elapsed time.
+- The display reports the measured JPEG stream production rate rather than the
+  configured `--camera-fps` ceiling. A stalled stream falls to `0.0 FPS`, while
+  unavailable or reset counters display `-- FPS`.
+
+Main files:
+
+- `src/urlab_bridge/web_control.py`
+- `tests/test_web_control.py`
+
+Developer notes:
+
+- Keep this metric separate from UE renderer FPS (`stat fps`) and MuJoCo step
+  frequency; each measures a different stage of the camera/control pipeline.
+- `encoded_frames` remains the source of truth for the web badge. Do not infer
+  delivered FPS from the configured camera rate.
+
+## 2026-07-29 - Per-Camera Runtime Power Control
+
+- Added `runtime.get_camera_enabled()` and `runtime.set_camera_enabled()` for
+  explicit Python control of URLab camera master-switch RPCs.
+- Camera handshake views retain their initial enabled state.
+- URLab-disabled streams stop UE capture/readback. URLab
+  suspends the camera's ZMQ publisher while retaining its endpoint, so existing
+  subscribers reconnect when re-enabled without reconstructing the control
+  server.
+
+Main files:
+
+- `src/urlab_client/articulation.py`
+- `src/urlab_client/namespaces/runtime.py`
+- `src/urlab_bridge/control_server/cameras.py`
+- `src/urlab_bridge/web_control.py`
+- `tests/test_control_server_cameras.py`
+- `tests/test_web_control.py`
+- `tests/test_entities.py`
+- `tests/test_transport.py`
+
+Developer notes:
+
+- Camera power is explicit per robot; it is independent of possession and
+  does not disable cameras on other web-controlled robots.
+- The default comes from each URLab camera component's `Start Enabled`
+  property. Browser controls must not call these runtime APIs; capture and
+  transport remain owned by URLab, Blueprint defaults, or explicit Python
+  clients.
+
+## 2026-07-29 - Discovered Multi-Camera Web Controls
+
+- Replaced the single configured web-camera switch with a per-robot camera
+  inventory sourced from URLab's articulation handshake.
+- `--web-camera ARTICULATION:CAMERA` now selects the initial preview; it does
+  not define or hardcode the available camera list.
+- Added a selector and independent browser-local show/hide control for every
+  camera URLab advertises on that articulation. Camera names and modes remain
+  model-defined.
+- Added browser previews for depth, semantic, and instance modes. Depth is
+  normalized with the camera's URLab-authored `depth_near_cm` and
+  `depth_far_cm`; segmentation colors bypass the RGB linear-to-sRGB
+  conversion and are reordered from ID-preserving BGRA wire order to RGB only
+  at JPEG display encoding.
+- JPEG work is viewer-driven, so cameras remain available for runtime toggling
+  without encoding every feed when only one preview is open.
+- Camera changes detach and blank the previous MJPEG image before opening a
+  cache-busted URL for the new camera. A camera with no fresh frame can no
+  longer leave the previous camera's image dimmed in place.
+
+Main files:
+
+- `src/urlab_bridge/control_server/cameras.py`
+- `src/urlab_bridge/web_control.py`
+- `scripts/run_go2_moe_multi_web.py`
+- `tests/test_control_server_cameras.py`
+- `tests/test_web_control.py`
+
+Developer notes:
+
+- Treat `(articulation, camera)` as the camera identity. Never infer camera
+  names such as `front_rgb` from the robot type.
+- Validate the initial camera against the connected articulation and populate
+  web choices only from `articulation.cameras`.
+- Keep depth visualization consistent with URLab: near is black, far is white,
+  and the fixed camera range must come from the handshake rather than
+  per-frame percentiles.
+- Keep semantic and instance arrays in BGRA inside `URLabCameraView`; class-ID
+  consumers depend on wire order. Channel reordering belongs only in display
+  encoders.
+- Browser show/hide controls close only that browser's MJPEG request. They must
+  not call `runtime.set_camera_enabled()` or mutate UE capture/transmission.
+
+## 2026-08-06 - ROS2 cmd_vel Input for Go2 MoE Control
+
+- Added an optional ROS2 command gateway for the central control server.
+- `--ros2-cmd-vel` starts a ROS2 node that subscribes to one
+  `/<articulation>/cmd_vel` topic per configured `--web-target`.
+- Incoming `geometry_msgs/Twist` commands are mapped to the existing Go2 policy
+  command tuple `(vx, vy, yaw)` and written into the shared `CommandHub` with
+  source `ros2`.
+- Web commands and ROS2 commands now share the same latest-command state. The
+  newest source controls the robot, and the existing stale timeout brakes stale
+  ROS2 commands just like stale web commands.
+
+Main files:
+
+- `src/urlab_bridge/control_server/ros2_gateway.py`
+- `src/urlab_bridge/control_server/commands.py`
+- `src/urlab_bridge/control_server/server.py`
+- `scripts/run_go2_moe_multi_web.py`
+- `tests/test_control_server_ros2_gateway.py`
+
+Developer notes:
+
+- This gateway is command input only. ROS2 state/camera export remains separate
+  from the older `urlab_tools.ros2_broadcaster` path and belongs to a later
+  milestone.
+- ROS2 imports stay lazy so non-ROS tests and non-ROS bridge usage continue to
+  work without a sourced ROS workspace.
+- Topic names intentionally follow the configured URLab articulation names,
+  e.g. `/go2_go2_rl_gym_C_1/cmd_vel`.
+
+## 2026-08-06 - ROS2 State And Camera Export
+
+- Extended the central control server's ROS2 gateway from command input to
+  bidirectional bridge behavior.
+- `--ros2-publish-state` publishes each controlled robot's joint state and
+  odometry from the same fresh articulation state used by the Go2 MoE loop.
+- `--ros2-publish-sensors` publishes available MuJoCo sensor values as generic
+  `Float64MultiArray` topics without reviving the older standalone broadcaster.
+- `--ros2-publish-cameras` publishes raw ROS2 image topics from the existing
+  `CameraHub` views. This is independent from browser MJPEG visibility and does
+  not create a second URLab client.
+- The control loop now accepts an optional post-step hook, used after the shared
+  `client.step(...)` so state publishers see fresh per-articulation data.
+
+Main files:
+
+- `src/urlab_bridge/control_server/ros2_gateway.py`
+- `src/urlab_bridge/control_server/server.py`
+- `src/urlab_bridge/control_server/go2_moe.py`
+- `scripts/run_go2_moe_multi_web.py`
+- `tests/test_control_server_ros2_gateway.py`
+
+Developer notes:
+
+- ROS2 publish-only mode starts the same gateway node even when
+  `--ros2-cmd-vel` is disabled.
+- State topics are named from configured URLab articulation names. Camera topics
+  are named from the actual cameras URLab advertises on that articulation.
+- Depth images are published as `32FC1` meters; URLab depth frames arrive in UE
+  scene centimeters and are converted at publish time.
+- Real RGB images use the same linear-to-sRGB display transfer as the web
+  stream. Semantic and instance images remain BGRA to preserve URLab's camera
+  color payload.
+- Camera `image_raw` and `camera_info` publishers use sensor-data QoS semantics:
+  best effort, volatile, keep-last, depth 1. State, odometry, and sensor topics
+  keep the normal reliable queue. Live camera streams should drop stale frames
+  instead of back-pressuring the bridge when a ROS2 subscriber cannot keep up.
+
 ## Verification Notes
 
 Recent focused checks used during this development pass:

@@ -1,0 +1,142 @@
+<mxfile host="app.diagrams.net" modified="2026-07-16T00:00:00.000Z" agent="Codex" version="24.7.17" type="device">
+  <diagram id="city-scale-hybrid-roadmap" name="City-Scale Hybrid Simulation Roadmap">
+    <mxGraphModel dx="1800" dy="1200" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1800" pageHeight="1200" math="0" shadow="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="1" parent="0"/>
+        <mxCell id="title" value="City-Scale Hybrid Simulation Platform Roadmap" style="text;html=1;strokeColor=none;fillColor=none;fontSize=26;fontStyle=1;fontColor=#111827;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="460" y="30" width="880" height="50" as="geometry"/>
+        </mxCell>
+        <mxCell id="subtitle" value="Central platform components feed task-specific training and validation paths" style="text;html=1;strokeColor=none;fillColor=none;fontSize=14;fontColor=#4B5563;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="510" y="78" width="780" height="30" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="center-bg" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F4F6;strokeColor=#9CA3AF;strokeWidth=2;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="575" y="210" width="650" height="540" as="geometry"/>
+        </mxCell>
+        <mxCell id="center-label" value="Shared City Platform Core" style="text;html=1;strokeColor=none;fillColor=none;fontSize=20;fontStyle=1;fontColor=#111827;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;" vertex="1" parent="1">
+          <mxGeometry x="730" y="225" width="340" height="36" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="carla" value="CARLA / Unreal City Runtime&#xa;city, cars, sensors, weather, replay" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DBEAFE;strokeColor=#2563EB;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="795" y="275" width="210" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="contract" value="Canonical CityState&#xa;data contract and timestamps" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DCFCE7;strokeColor=#16A34A;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="795" y="405" width="210" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="orchestrator" value="Scenario Orchestrator&#xa;resets, seeds, incidents, tasks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FEF3C7;strokeColor=#D97706;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="625" y="535" width="210" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="backend" value="Backend Adapter Layer&#xa;CPU MuJoCo, MJWarp, MJX, MUSA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#EDE9FE;strokeColor=#7C3AED;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="965" y="535" width="210" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="data" value="Experiment and Data Lake&#xa;logs, datasets, metrics, replay" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFE4E6;strokeColor=#E11D48;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="795" y="650" width="210" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="urlab" value="URLab Robot Extension&#xa;robot actors and CPU MuJoCo validation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#CCFBF1;strokeColor=#0F766E;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="595" y="360" width="210" height="72" as="geometry"/>
+        </mxCell>
+        <mxCell id="training" value="External GPU Training Servers&#xa;MuJoCo Warp / MJX / MUSA" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FCE7F3;strokeColor=#DB2777;strokeWidth=2;fontColor=#111827;fontSize=14;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="995" y="360" width="210" height="72" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="core-edge-1" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="carla" target="contract">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="core-edge-2" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="urlab" target="contract">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="core-edge-3" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="training" target="contract">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="core-edge-4" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="contract" target="orchestrator">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="core-edge-5" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="contract" target="backend">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="core-edge-6" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="orchestrator" target="data">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="core-edge-7" value="" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#6B7280;" edge="1" parent="1" source="backend" target="data">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="task-locomotion" value="Robot Locomotion&#xa;MJWarp batch train -> CPU/UE validate" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0F766E;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="95" y="140" width="230" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-terrain" value="Terrain Robustness&#xa;randomized physics -> UE replay" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#0F766E;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="85" y="310" width="230" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-nav" value="Robot Navigation&#xa;planner/policy + city scenarios" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="90" y="490" width="230" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-vla" value="VLA / Vision Robot Policies&#xa;UE render requests + robot physics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#DB2777;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="140" y="710" width="250" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-world" value="Robot World Models&#xa;physics rollouts + visual rollouts + logs" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E11D48;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="430" y="875" width="260" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-driving" value="Autonomous Driving&#xa;CARLA cars, sensors, traffic, replay" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="760" y="925" width="260" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-ped" value="Pedestrians and Rule Agents&#xa;CARLA/UE AI + custom city behavior" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D97706;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1120" y="875" width="270" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-perception" value="Perception-Only Training&#xa;synthetic RGB/depth/segmentation" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#2563EB;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1410" y="710" width="270" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-emergence" value="Multi-Agent Emergence&#xa;large sweeps -> rare-case mining" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#E11D48;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1480" y="490" width="250" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-cityops" value="City Operation Policies&#xa;incidents, routing, signals, response plans" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#D97706;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1485" y="310" width="260" height="78" as="geometry"/>
+        </mxCell>
+        <mxCell id="task-validation" value="High-Fidelity Validation&#xa;CARLA/UE replay + CPU MuJoCo checks" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#FFFFFF;strokeColor=#7C3AED;strokeWidth=2;fontColor=#111827;fontSize=13;align=center;verticalAlign=middle;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="1460" y="140" width="260" height="78" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="path-locomotion" value="robot training path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#0F766E;fontColor=#0F766E;fontSize=11;" edge="1" parent="1" source="backend" target="task-locomotion">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-terrain" value="randomization path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#0F766E;fontColor=#0F766E;fontSize=11;" edge="1" parent="1" source="backend" target="task-terrain">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-nav" value="city navigation path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#2563EB;fontColor=#2563EB;fontSize=11;" edge="1" parent="1" source="orchestrator" target="task-nav">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-vla" value="vision-action path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#DB2777;fontColor=#DB2777;fontSize=11;" edge="1" parent="1" source="data" target="task-vla">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-world" value="prediction-data path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#E11D48;fontColor=#E11D48;fontSize=11;" edge="1" parent="1" source="data" target="task-world">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-driving" value="car simulation path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#2563EB;fontColor=#2563EB;fontSize=11;" edge="1" parent="1" source="carla" target="task-driving">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-ped" value="agent behavior path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#D97706;fontColor=#D97706;fontSize=11;" edge="1" parent="1" source="orchestrator" target="task-ped">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-perception" value="synthetic data path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#2563EB;fontColor=#2563EB;fontSize=11;" edge="1" parent="1" source="carla" target="task-perception">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-emergence" value="experiment sweep path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#E11D48;fontColor=#E11D48;fontSize=11;" edge="1" parent="1" source="data" target="task-emergence">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-cityops" value="operation policy path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#D97706;fontColor=#D97706;fontSize=11;" edge="1" parent="1" source="orchestrator" target="task-cityops">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+        <mxCell id="path-validation" value="validation path" style="endArrow=classic;html=1;rounded=0;strokeWidth=2;strokeColor=#7C3AED;fontColor=#7C3AED;fontSize=11;" edge="1" parent="1" source="contract" target="task-validation">
+          <mxGeometry relative="1" as="geometry"/>
+        </mxCell>
+
+        <mxCell id="note-train" value="Training principle: run cheap batched loops first, render selected observations only when the task needs vision." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9FAFB;strokeColor=#D1D5DB;fontColor=#374151;fontSize=12;align=left;verticalAlign=middle;spacing=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="470" y="1050" width="410" height="58" as="geometry"/>
+        </mxCell>
+        <mxCell id="note-validate" value="Validation principle: replay important policies and rare cases in CARLA/UE with CPU MuJoCo checks where robot physics matters." style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F9FAFB;strokeColor=#D1D5DB;fontColor=#374151;fontSize=12;align=left;verticalAlign=middle;spacing=10;arcSize=8;" vertex="1" parent="1">
+          <mxGeometry x="920" y="1050" width="430" height="58" as="geometry"/>
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>
