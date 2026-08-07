@@ -145,8 +145,6 @@ def base_handshake(mujoco_mod, synthetic_mjb) -> Dict[str, Any]:
                         "mode": "real",
                         "resolution": [320, 240],
                         "fovy": 45.0,
-                        "depth_near_cm": 12.5,
-                        "depth_far_cm": 7500.0,
                         "zmq_endpoint": None,
                         "zmq_topic": None,
                     }

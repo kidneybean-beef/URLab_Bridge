@@ -160,7 +160,8 @@ class URLabCameraView:
     `latest_frame` is None until the first frame arrives (streaming mode)
     or until the first `step(include_cameras=True)` reply populates it.
     Shape depends on mode: `(H, W, 4)` for real / semantic / instance and
-    `(H, W)` for depth. Segmentation channels remain in wire-order BGRA.
+    `(H, W)` for depth. Real frames are decoded to RGBA; segmentation frames
+    remain in URLab's ID-preserving BGRA wire order.
     """
 
     name: str

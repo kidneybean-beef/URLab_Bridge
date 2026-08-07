@@ -746,20 +746,21 @@ class URLabClient:
         observations: str,
         control_articulations: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
-        if control_articulations is None:
-            prefixes = list(self.articulations.keys())
-        else:
-            prefixes = [str(prefix) for prefix in control_articulations]
-
         per_art: Dict[str, Any] = {}
-        for prefix in prefixes:
-            try:
-                art = self.articulations[prefix]
-            except KeyError as exc:
-                raise KeyError(
-                    f"articulation {prefix!r} not found. "
-                    f"Available articulations: {list(self.articulations.keys())}"
-                ) from exc
+        if control_articulations is None:
+            art_items = self.articulations.items()
+        else:
+            selected: list[tuple[str, Any]] = []
+            for prefix in control_articulations:
+                try:
+                    selected.append((prefix, self.articulations[prefix]))
+                except KeyError as exc:
+                    raise KeyError(
+                        f"articulation {prefix!r} not found. "
+                        f"Available articulations: {list(self.articulations.keys())}"
+                    ) from exc
+            art_items = selected
+        for prefix, art in art_items:
             per_art[prefix] = art._build_step_request(control_mode=None)
 
         # Cameras are NOT requested inline: they stream over SHM/ZMQ and are

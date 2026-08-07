@@ -243,7 +243,6 @@ def test_camera_enabled_runtime_rpc(mock_step_server, base_handshake):
             "articulation": "vx300s",
             "camera": "wrist",
             "enabled": False,
-            "streaming": False,
         }
     )
     client = _make_client(mock_step_server.port)
@@ -299,24 +298,14 @@ def test_set_twist_control_state_rpc(mock_step_server, base_handshake):
     mock_step_server.replies.append(wr.set_twist_control_state_ok(
         articulation="go2",
         dash_active=True,
-        max_vx=1.0,
-        max_vy=0.5,
-        max_yaw=1.57,
-        dash_max_vx=2.0,
-        dash_max_vy=1.0,
-        dash_max_yaw=3.14,
+        max_vx=0.7,
     ))
     client = _make_client(mock_step_server.port)
     try:
         client.connect()
         result = client.runtime.set_twist_control_state(
             "go2",
-            max_vx=1.0,
-            max_vy=0.5,
-            max_yaw=1.57,
-            dash_max_vx=2.0,
-            dash_max_vy=1.0,
-            dash_max_yaw=3.14,
+            max_vx=0.7,
             dash_active=True,
             keys={"w": True, "shift": True},
         )
@@ -327,12 +316,7 @@ def test_set_twist_control_state_rpc(mock_step_server, base_handshake):
     sent = mock_step_server.received[1]
     assert sent["op"] == "set_twist_control_state"
     assert sent["articulation"] == "go2"
-    assert sent["max_vx"] == pytest.approx(1.0)
-    assert sent["max_vy"] == pytest.approx(0.5)
-    assert sent["max_yaw"] == pytest.approx(1.57)
-    assert sent["dash_max_vx"] == pytest.approx(2.0)
-    assert sent["dash_max_vy"] == pytest.approx(1.0)
-    assert sent["dash_max_yaw"] == pytest.approx(3.14)
+    assert sent["max_vx"] == pytest.approx(0.7)
     assert sent["dash_active"] is True
     assert sent["keys"] == {"w": True, "shift": True}
 

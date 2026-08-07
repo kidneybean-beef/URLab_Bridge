@@ -764,7 +764,7 @@ class _TwistContext:
     `generated_commands` obs term). In training that vector is
     randomly resampled every few seconds; for URLab eval we let the
     user drive it interactively via the actor's `UMjTwistController`
-    (keyboard / gamepad), which UE ships back in each step reply
+    (WASD / gamepad), which UE ships back in each step reply
     (`twist.linear.x`, `twist.linear.y`, `twist.angular.z` →
     `art.twist_linear` / `art.twist_angular`). When no UMjTwistController
     is attached on the UE side, those vectors stay zero and the policy

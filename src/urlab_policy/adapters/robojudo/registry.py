@@ -49,7 +49,7 @@ POLICIES = {
         "robot": "g1_12dof",
         "dofs": 12,
         "xml": "g1_12dof",
-        "desc": "Basic walking -- keyboard twist control",
+        "desc": "Basic walking -- WASD twist control",
         "ctrl_type": "twist",
     },
     "unitree_wo_gait": {
@@ -127,7 +127,7 @@ POLICIES = {
         "robot": "go2",
         "dofs": 12,
         "xml": "go2",
-        "desc": "Gait-conditioned agility -- rough terrain locomotion (keyboard twist)",
+        "desc": "Gait-conditioned agility -- rough terrain locomotion (WASD twist)",
         "ctrl_type": "twist",
     },
 }

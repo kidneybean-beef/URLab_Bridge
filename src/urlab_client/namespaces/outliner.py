@@ -143,7 +143,9 @@ class _OutlinerNamespace(_RpcNamespace):
                 "complex_mesh": bool(item.get("complex_mesh", False)),
                 "coacd_threshold": float(item.get("coacd_threshold", 0.05)),
                 "driven_by_unreal": bool(item.get("driven_by_unreal", False)),
-                "friction": [float(x) for x in item.get("friction", (1.0, 1.0, 1.0))],
+                "friction": [
+                    float(x) for x in item.get("friction", (1.0, 1.0, 1.0))
+                ],
             })
         reply = self._client._rpc(
             "add_quick_convert_many",

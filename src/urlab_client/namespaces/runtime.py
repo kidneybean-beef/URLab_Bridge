@@ -269,29 +269,52 @@ class _RuntimeNamespace(_RpcNamespace):
         of raising -- so callers can drop the ``try/except: pass`` boilerplate
         and let UE fall back to the compiled options."""
         opts: Dict[str, Any] = {}
-        if timestep          is not None: opts["timestep"]          = float(timestep)
-        if gravity           is not None: opts["gravity"]           = [float(x) for x in gravity]
-        if wind              is not None: opts["wind"]              = [float(x) for x in wind]
-        if magnetic          is not None: opts["magnetic"]          = [float(x) for x in magnetic]
-        if density           is not None: opts["density"]           = float(density)
-        if viscosity         is not None: opts["viscosity"]         = float(viscosity)
-        if impratio          is not None: opts["impratio"]          = float(impratio)
-        if tolerance         is not None: opts["tolerance"]         = float(tolerance)
-        if iterations        is not None: opts["iterations"]        = int(iterations)
-        if ls_iterations     is not None: opts["ls_iterations"]     = int(ls_iterations)
-        if integrator        is not None: opts["integrator"]        = str(integrator)
-        if cone              is not None: opts["cone"]              = str(cone)
-        if solver            is not None: opts["solver"]            = str(solver)
-        if noslip_iterations is not None: opts["noslip_iterations"] = int(noslip_iterations)
-        if noslip_tolerance  is not None: opts["noslip_tolerance"]  = float(noslip_tolerance)
-        if ccd_iterations    is not None: opts["ccd_iterations"]    = int(ccd_iterations)
-        if ccd_tolerance     is not None: opts["ccd_tolerance"]     = float(ccd_tolerance)
-        if enable_multiccd   is not None: opts["enable_multiccd"]   = bool(enable_multiccd)
-        if enable_sleep      is not None: opts["enable_sleep"]      = bool(enable_sleep)
-        if sleep_tolerance   is not None: opts["sleep_tolerance"]   = float(sleep_tolerance)
-        if disableflags      is not None: opts["disableflags"]      = int(disableflags)
-        if enableflags       is not None: opts["enableflags"]       = int(enableflags)
-        if num_worker_threads is not None: opts["num_worker_threads"] = int(num_worker_threads)
+        if timestep is not None:
+            opts["timestep"] = float(timestep)
+        if gravity is not None:
+            opts["gravity"] = [float(x) for x in gravity]
+        if wind is not None:
+            opts["wind"] = [float(x) for x in wind]
+        if magnetic is not None:
+            opts["magnetic"] = [float(x) for x in magnetic]
+        if density is not None:
+            opts["density"] = float(density)
+        if viscosity is not None:
+            opts["viscosity"] = float(viscosity)
+        if impratio is not None:
+            opts["impratio"] = float(impratio)
+        if tolerance is not None:
+            opts["tolerance"] = float(tolerance)
+        if iterations is not None:
+            opts["iterations"] = int(iterations)
+        if ls_iterations is not None:
+            opts["ls_iterations"] = int(ls_iterations)
+        if integrator is not None:
+            opts["integrator"] = str(integrator)
+        if cone is not None:
+            opts["cone"] = str(cone)
+        if solver is not None:
+            opts["solver"] = str(solver)
+        if noslip_iterations is not None:
+            opts["noslip_iterations"] = int(noslip_iterations)
+        if noslip_tolerance is not None:
+            opts["noslip_tolerance"] = float(noslip_tolerance)
+        if ccd_iterations is not None:
+            opts["ccd_iterations"] = int(ccd_iterations)
+        if ccd_tolerance is not None:
+            opts["ccd_tolerance"] = float(ccd_tolerance)
+        if enable_multiccd is not None:
+            opts["enable_multiccd"] = bool(enable_multiccd)
+        if enable_sleep is not None:
+            opts["enable_sleep"] = bool(enable_sleep)
+        if sleep_tolerance is not None:
+            opts["sleep_tolerance"] = float(sleep_tolerance)
+        if disableflags is not None:
+            opts["disableflags"] = int(disableflags)
+        if enableflags is not None:
+            opts["enableflags"] = int(enableflags)
+        if num_worker_threads is not None:
+            opts["num_worker_threads"] = int(num_worker_threads)
 
         if not opts:
             raise ValueError("set_sim_options requires at least one field")
@@ -488,10 +511,14 @@ class _RuntimeNamespace(_RpcNamespace):
         when penetrating."""
         payload: Dict[str, Any] = {"max_contacts": int(max_contacts)}
         flt: Dict[str, str] = {}
-        if body1 is not None: flt["body1"] = str(body1)
-        if body2 is not None: flt["body2"] = str(body2)
-        if geom1 is not None: flt["geom1"] = str(geom1)
-        if geom2 is not None: flt["geom2"] = str(geom2)
+        if body1 is not None:
+            flt["body1"] = str(body1)
+        if body2 is not None:
+            flt["body2"] = str(body2)
+        if geom1 is not None:
+            flt["geom1"] = str(geom1)
+        if geom2 is not None:
+            flt["geom2"] = str(geom2)
         if flt:
             payload["filter"] = flt
         reply = self._client._rpc(

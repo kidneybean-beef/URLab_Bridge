@@ -83,7 +83,7 @@ the rest of the URLab documentation:
 
 | Key                | Robot   | DOF | MJCF                                                 | Description                              | PHC |
 |--------------------|---------|-----|------------------------------------------------------|------------------------------------------|:---:|
-| `unitree_12dof`    | G1      | 12  | `assets/robots/g1/g1_29dof_rev_1_0.xml`              | Basic walking, keyboard twist control    |     |
+| `unitree_12dof`    | G1      | 12  | `assets/robots/g1/g1_29dof_rev_1_0.xml`              | Basic walking, WASD twist control        |     |
 | `unitree_wo_gait`  | G1      | 29  | `assets/robots/g1/g1_29dof_rev_1_0.xml`              | Full body walking without gait clock     |     |
 | `smooth`           | G1      | 29  | `assets/robots/g1/g1_29dof_rev_1_0.xml`              | Smoother walking policy                  |     |
 | `beyondmimic_dance`| G1      | 29  | `assets/robots/g1/g1_29dof_rev_1_0.xml`              | Motion imitation, dance                  |  Y  |

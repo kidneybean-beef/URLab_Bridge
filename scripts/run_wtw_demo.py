@@ -22,7 +22,7 @@ Prerequisites:
 
     1. URLab editor in PIE with a Go2 actor imported. Add a
        `UMjTwistController` component to the Go2 BP if you want to
-       drive it via keyboard/gamepad in PIE.
+       drive it via WASD/gamepad in PIE.
 
     2. WTW assets present at `assets/models/go2/wtw/`:
          - body_latest.jit
