@@ -479,6 +479,134 @@ Developer notes:
   best effort, volatile, keep-last, depth 1. State, odometry, and sensor topics
   keep the normal reliable queue. Live camera streams should drop stale frames
   instead of back-pressuring the bridge when a ROS2 subscriber cannot keep up.
+- Added periodic ROS2 raw-camera publish diagnostics. The log reports internal
+  publish FPS, raw MB/s, duplicate skips, message-build time, `rclpy.publish()`
+  call time, bytes per frame, and per-camera publish counts. Use this before
+  changing camera payload formats so bottlenecks can be assigned to URLab frame
+  source, Python message construction, ROS2 publish, or subscriber/DDS receive.
+- Added `scripts/ros2_image_bench.py`, a lightweight ROS2 image subscriber
+  benchmark that reports receive Hz and raw bandwidth from the same callback
+  stream. It defaults to best-effort, keep-last, depth-1 QoS to match URLab's
+  live camera publishers and avoids comparing separate `ros2 topic hz` and
+  `ros2 topic bw` runs. It uses a persistent executor and separate interval
+  counters so live `window` lines are true per-window measurements, while the
+  final line reports the full run.
+- Added an optional ROS2 compressed camera preview path. Raw `sensor_msgs/Image`
+  topics remain available for correctness/debug, while
+  `--ros2-publish-compressed-cameras` publishes JPEG
+  `sensor_msgs/CompressedImage` topics at
+  `/<articulation>/camera/<camera>/image_raw/compressed` using the same display
+  encoder as the web stream. Use this when comparing ROS2 visual streaming
+  against the browser MJPEG path.
+- Added `ros2/urlab_image_transport_relay`, a small C++ ROS2 sidecar for the
+  official `image_transport` plugin path. It subscribes to a URLab raw
+  `sensor_msgs/Image` topic and republishes on a distinct output base topic
+  through `image_transport`, allowing installed transports such as
+  `compressed`, `compressedDepth`, `turbojpeg`, or `zstd` to provide standard
+  derived topics. Keep the relay input and output topics different to avoid a
+  raw-transport feedback loop.
+
+## 2026-08-14 - Session-Safe Direct Camera Discovery
+
+- Added URLab's sessionless `describe_runtime` contract to the direct C++
+  camera bridge path. The bridge now discovers camera ZMQ endpoints without
+  issuing `hello`, so it cannot replace the Python policy server's active
+  controller session.
+- Split runtime-description msgpack packing/parsing into a small reusable C++
+  unit and added tests for all camera modes, malformed replies, disabled ZMQ
+  broadcasting, and the one-field request shape.
+- Removed sidecar camera-power control. `auto_enable_cameras=true` is retained
+  only as a compatibility parameter and now fails before any URLab RPC.
+  Camera capture remains owned by URLab UI, Blueprint, or the controller
+  session that already owns the robot.
+- The direct bridge logs the discovered camera transport metadata at startup so
+  endpoint, capture state, and output resolution failures are actionable.
+
+## 2026-08-14 - Real Camera Payload Contracts
+
+- Added metadata-driven support for both `bgra8_linear` and `bgra8_srgb` Real
+  camera payloads across the browser, Python ROS2 publisher, and direct C++
+  ROS2 bridge.
+- The attempted `bgra8_srgb` plugin default was rolled back after its Unreal
+  render-target path produced black live captures. The active URLab contract is
+  `bgra8_linear`; consumers apply the existing LUT before display or `rgb8`
+  publication.
+
+Developer notes:
+
+- Treat `payload_encoding` as the source-of-truth camera color contract. Do
+  not infer gamma from `mode == real`.
+- `bgra8_srgb` remains a supported forward-compatible branch, but current
+  plugin output is `bgra8_linear`.
+
+Main files:
+
+- `ros2/urlab_image_transport_relay/src/urlab_camera_bridge.cpp`
+- `ros2/urlab_image_transport_relay/src/runtime_description.cpp`
+- `ros2/urlab_image_transport_relay/include/urlab_image_transport_relay/runtime_description.hpp`
+- `ros2/urlab_image_transport_relay/test/test_runtime_description.cpp`
+
+## 2026-08-17 - Front RGB Rendering and Camera Calibration
+
+### Spatial post processing
+
+- Removed the camera `BeginPlay` copy of the first enabled
+  `PostProcessVolume`. Unreal now blends volumes at each sensor location using
+  normal bounds, priority, and blend-weight rules.
+- Kept the independent capture path. URLab still fills missing project GI,
+  reflection, and Lumen cache overrides without replacing post-process settings
+  authored on the camera.
+
+### Temporal anti-aliasing
+
+- Real cameras retain the underlying Scene Capture component's native
+  **Advanced Show Flags** for anti-aliasing. URLab does not expose a second
+  Temporal-AA property or force an AA method, while motion blur stays disabled
+  for every camera mode.
+- The temporary wrapper property and scoped view-extension experiment were
+  removed: the SceneCapture `TemporalAA` show flag is not an AA-method
+  selector, and neither mechanism addressed the black-frame diagnosis.
+
+### Projection and ROS2 calibration
+
+- Kept public `fovy` as MuJoCo vertical FOV and converted it to Unreal's
+  horizontal `FOVAngle` using the active aspect ratio for every camera mode.
+- Replaced width/height-only ROS2 `CameraInfo` messages in both the Python
+  publisher and direct C++ sidecar with a centered square-pixel pinhole model.
+  `D`, `K`, `R`, and `P` are now populated consistently from resolution and
+  vertical FOV; invalid metadata fails before camera publishing starts.
+
+Developer notes:
+
+- Do not pass MuJoCo `fovy` directly to Unreal `FOVAngle`; the two APIs use
+  vertical and horizontal conventions respectively.
+- Keep Python and C++ calibration formulas synchronized. At 640x480 and 90
+  degrees vertical FOV, both must produce `fx=fy=240`, `cx=319.5`, and
+  `cy=239.5`.
+- The original calibration work did not alter the Real-camera payload contract;
+  the final-LDR sRGB update below supersedes its former linear contract.
+
+### Final LDR sRGB Real Camera Contract
+
+- Changed URLab `Real` cameras from the intermediate
+  `SCS_FinalToneCurveHDR` / linear target path to
+  `SCS_FinalColorLDR` / `RTF_RGBA8_SRGB`.
+- The camera render target leaves `TargetGamma` unset so its sRGB contract is
+  not overridden by the editor display gamma. URLab now advertises the native
+  BGRA bytes as `bgra8_srgb`.
+- Browser, Python ROS2, and direct C++ image-transport consumers already branch
+  on `payload_encoding`; new frames take the channel-reorder-only path while
+  old `bgra8_linear` plugins retain exactly one legacy display transfer.
+- Depth, semantic, and instance capture paths are unchanged.
+
+Main files:
+
+- `src/urlab_bridge/control_server/ros2_gateway.py`
+- `ros2/urlab_image_transport_relay/include/urlab_image_transport_relay/runtime_description.hpp`
+- `ros2/urlab_image_transport_relay/src/runtime_description.cpp`
+- `ros2/urlab_image_transport_relay/src/urlab_camera_bridge.cpp`
+- `tests/test_control_server_ros2_gateway.py`
+- `ros2/urlab_image_transport_relay/test/test_runtime_description.cpp`
 
 ## Verification Notes
 
