@@ -7,7 +7,7 @@ _SRC = os.path.normpath(os.path.join(_HERE, "..", "src"))
 if _SRC not in sys.path:
     sys.path.insert(0, _SRC)
 
-from urlab_client import URLabClient
+from urlab_client import URLabClient  # noqa: E402
 
 ADDRESS = "tcp://127.0.0.1"
 BATCH_STEPS = 200
