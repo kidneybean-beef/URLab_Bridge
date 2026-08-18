@@ -162,7 +162,7 @@ def test_entity_apply_xfrc_in_puppet_warns():
     assert any("puppet mode" in str(x.message) for x in w)
 
 
-def test_camera_view_parses_mode_and_dtype():
+def test_camera_view_parses_mode_dtype_and_legacy_payload_fallback():
     view = URLabCameraView.from_handshake(
         "depth_cam",
         {"mode": "depth", "resolution": [640, 480], "fovy": 60.0},
@@ -172,3 +172,20 @@ def test_camera_view_parses_mode_and_dtype():
     assert view.resolution == (640, 480)
     assert view.owner == "vx300s"
     assert view.dtype == np.dtype(np.float32)
+    assert view.payload_encoding == "float32_cm"
+
+    legacy_real = URLabCameraView.from_handshake(
+        "legacy_real",
+        {"mode": "real", "resolution": [640, 480], "fovy": 60.0},
+    )
+    display_ready_real = URLabCameraView.from_handshake(
+        "display_ready_real",
+        {
+            "mode": "real",
+            "resolution": [640, 480],
+            "fovy": 60.0,
+            "payload_encoding": "bgra8_srgb",
+        },
+    )
+    assert legacy_real.payload_encoding == "bgra8_linear"
+    assert display_ready_real.payload_encoding == "bgra8_srgb"

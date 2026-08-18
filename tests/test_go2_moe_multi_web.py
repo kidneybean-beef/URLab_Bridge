@@ -67,25 +67,36 @@ def test_multi_web_parser_accepts_optional_ros2_cmd_vel_gateway():
         "--ros2-publish-state",
         "--ros2-publish-sensors",
         "--ros2-publish-cameras",
+        "--ros2-publish-compressed-cameras",
         "--ros2-state-hz",
         "25",
         "--ros2-camera-fps",
         "12",
+        "--ros2-camera-jpeg-quality",
+        "70",
+        "--ros2-camera-log-interval-s",
+        "3",
     ])
 
     assert defaults.ros2_cmd_vel is False
     assert defaults.ros2_publish_state is False
     assert defaults.ros2_publish_sensors is False
     assert defaults.ros2_publish_cameras is False
+    assert defaults.ros2_publish_compressed_cameras is False
     assert defaults.ros2_state_hz is None
     assert defaults.ros2_camera_fps is None
+    assert defaults.ros2_camera_jpeg_quality is None
+    assert defaults.ros2_camera_log_interval_s == pytest.approx(2.0)
     assert defaults.ros2_node_name == "urlab_go2_control_server"
     assert args.ros2_cmd_vel is True
     assert args.ros2_publish_state is True
     assert args.ros2_publish_sensors is True
     assert args.ros2_publish_cameras is True
+    assert args.ros2_publish_compressed_cameras is True
     assert args.ros2_state_hz == pytest.approx(25.0)
     assert args.ros2_camera_fps == pytest.approx(12.0)
+    assert args.ros2_camera_jpeg_quality == 70
+    assert args.ros2_camera_log_interval_s == pytest.approx(3.0)
     assert args.ros2_node_name == "urlab_test_ros2"
 
 

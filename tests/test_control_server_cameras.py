@@ -12,6 +12,7 @@ from urlab_bridge.control_server.cameras import (
     depth_to_grayscale_u8,
     encode_camera_jpeg,
     linear_rgb_to_srgb_u8,
+    real_rgba_to_display_rgb_u8,
     segmentation_bgra_to_rgb_u8,
 )
 from urlab_bridge.control_server.models import (
@@ -28,6 +29,38 @@ def test_linear_rgb_to_srgb_u8_applies_display_transfer_function() -> None:
     srgb = linear_rgb_to_srgb_u8(linear)
 
     assert srgb.tolist() == [[[0, 137, 188]]]
+
+
+def test_real_srgb_payload_reorders_without_a_second_gamma_transfer() -> None:
+    # URLabCameraView has already converted the BGRA wire sample
+    # [B=0, G=64, R=128, A=255] into this RGBA frame.
+    rgba = np.array([[[128, 64, 0, 255]]], dtype=np.uint8)
+
+    rgb = real_rgba_to_display_rgb_u8(
+        rgba,
+        payload_encoding="bgra8_srgb",
+    )
+
+    assert rgb.tolist() == [[[128, 64, 0]]]
+
+
+def test_real_legacy_linear_payload_keeps_display_transfer_compatibility() -> None:
+    linear_rgba = np.array([[[0, 64, 128, 255]]], dtype=np.uint8)
+
+    rgb = real_rgba_to_display_rgb_u8(
+        linear_rgba,
+        payload_encoding="bgra8_linear",
+    )
+
+    assert rgb.tolist() == [[[0, 137, 188]]]
+
+
+def test_real_camera_rejects_an_unknown_payload_contract() -> None:
+    with pytest.raises(ValueError, match="unsupported Real camera payload encoding"):
+        real_rgba_to_display_rgb_u8(
+            np.zeros((1, 1, 4), dtype=np.uint8),
+            payload_encoding="rgba16f",
+        )
 
 
 def test_parse_web_camera_target() -> None:

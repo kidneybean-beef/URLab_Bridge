@@ -15,6 +15,9 @@ logger = logging.getLogger(__name__)
 
 JpegEncoder = Callable[[np.ndarray, int], bytes]
 
+REAL_PAYLOAD_SRGB = "bgra8_srgb"
+REAL_PAYLOAD_LINEAR = "bgra8_linear"
+
 _LINEAR_U8 = np.arange(256, dtype=np.float32) / 255.0
 _LINEAR_TO_SRGB_U8 = np.clip(
     np.rint(
@@ -31,11 +34,48 @@ _LINEAR_TO_SRGB_U8 = np.clip(
 
 
 def linear_rgb_to_srgb_u8(frame: np.ndarray) -> np.ndarray:
-    """Convert URLab's linear RGB bytes to display-encoded sRGB."""
+    """Convert legacy URLab linear RGBA bytes to display-encoded RGB."""
     return _LINEAR_TO_SRGB_U8[frame[..., :3]]
 
 
-def encode_rgb_jpeg(frame: np.ndarray, quality: int) -> bytes:
+def real_rgba_to_display_rgb_u8(
+    frame: np.ndarray,
+    *,
+    payload_encoding: str,
+) -> np.ndarray:
+    """Return display-ready RGB from a decoded URLab Real-camera frame.
+
+    ``URLabCameraView.latest_frame`` is already RGBA because the client has
+    swizzled URLab's native BGRA wire bytes. New plugins advertise
+    ``bgra8_srgb`` and require only that swizzle. Older plugins advertise
+    ``bgra8_linear`` and retain the legacy display-transfer LUT.
+    """
+    pixels = np.asarray(frame)
+    if pixels.dtype != np.uint8:
+        raise ValueError(f"Real camera frame must be uint8, got {pixels.dtype}")
+    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
+        raise ValueError(
+            "Real camera frame must have shape HxWx3 or HxWx4, "
+            f"got {pixels.shape}"
+        )
+
+    if payload_encoding == REAL_PAYLOAD_SRGB:
+        return pixels[..., :3]
+    if payload_encoding == REAL_PAYLOAD_LINEAR:
+        return linear_rgb_to_srgb_u8(pixels)
+    raise ValueError(
+        "unsupported Real camera payload encoding "
+        f"{payload_encoding!r}; expected {REAL_PAYLOAD_SRGB!r} or "
+        f"{REAL_PAYLOAD_LINEAR!r}"
+    )
+
+
+def encode_rgb_jpeg(
+    frame: np.ndarray,
+    quality: int,
+    *,
+    payload_encoding: str = REAL_PAYLOAD_LINEAR,
+) -> bytes:
     try:
         from PIL import Image
     except ImportError as exc:  # pragma: no cover - depends on local environment
@@ -43,18 +83,13 @@ def encode_rgb_jpeg(frame: np.ndarray, quality: int) -> bytes:
             "web camera streaming requires Pillow; install the web-camera extra"
         ) from exc
 
-    pixels = np.asarray(frame)
-    if pixels.dtype != np.uint8:
-        raise ValueError(f"RGB camera frame must be uint8, got {pixels.dtype}")
-    if pixels.ndim != 3 or pixels.shape[2] not in (3, 4):
-        raise ValueError(
-            f"RGB camera frame must have shape HxWx3 or HxWx4, got {pixels.shape}"
-        )
-
-    # UMjCamera uses SCS_FinalToneCurveHDR, whose output is in the linear sRGB
-    # gamut. UE applies the display transfer function when showing its render
-    # target; JPEG viewers do not, so encode display-ready sRGB samples here.
-    image = Image.fromarray(linear_rgb_to_srgb_u8(pixels), mode="RGB")
+    image = Image.fromarray(
+        real_rgba_to_display_rgb_u8(
+            frame,
+            payload_encoding=payload_encoding,
+        ),
+        mode="RGB",
+    )
     output = BytesIO()
     image.save(output, format="JPEG", quality=int(quality), subsampling=2)
     return output.getvalue()
@@ -101,6 +136,7 @@ def encode_camera_jpeg(
     quality: int,
     *,
     mode: object,
+    payload_encoding: str = REAL_PAYLOAD_LINEAR,
     depth_near_cm: float = 10.0,
     depth_far_cm: float = 10000.0,
 ) -> bytes:
@@ -115,7 +151,11 @@ def encode_camera_jpeg(
     mode_name = str(getattr(mode, "value", mode)).lower()
     pixels = np.asarray(frame)
     if mode_name == "real":
-        return encode_rgb_jpeg(pixels, quality)
+        return encode_rgb_jpeg(
+            pixels,
+            quality,
+            payload_encoding=payload_encoding,
+        )
 
     if mode_name == "depth":
         if pixels.ndim == 3 and pixels.shape[2] == 1:
@@ -162,11 +202,15 @@ class MjpegCameraStream:
         self.fps = float(fps)
         self.jpeg_quality = int(jpeg_quality)
         self.mode = getattr(view, "mode", "real")
+        self.payload_encoding = str(
+            getattr(view, "payload_encoding", REAL_PAYLOAD_LINEAR)
+        )
         self._encoder = encoder or (
             lambda frame, quality: encode_camera_jpeg(
                 frame,
                 quality,
                 mode=self.mode,
+                payload_encoding=self.payload_encoding,
                 depth_near_cm=float(getattr(view, "depth_near_cm", 10.0)),
                 depth_far_cm=float(getattr(view, "depth_far_cm", 10000.0)),
             )
@@ -261,6 +305,7 @@ class MjpegCameraStream:
                 "articulation": self.articulation,
                 "camera": self.camera_name,
                 "mode": str(getattr(self.mode, "value", self.mode)),
+                "payload_encoding": self.payload_encoding,
                 "available": self._jpeg is not None,
                 "enabled": bool(getattr(self.view, "enabled", True)),
                 "closed": self.closed,

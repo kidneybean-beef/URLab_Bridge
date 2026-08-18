@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any
 
 import numpy as np
 
-from .cameras import linear_rgb_to_srgb_u8
+from .cameras import encode_camera_jpeg, real_rgba_to_display_rgb_u8
 from .commands import CommandHub
 from .models import WebPolicyTarget
 
@@ -24,8 +25,73 @@ class Ros2MessageTypes:
     Odometry: Any | None = None
     Float64MultiArray: Any | None = None
     Image: Any | None = None
+    CompressedImage: Any | None = None
     CameraInfo: Any | None = None
     CameraQoS: Any | None = None
+
+
+@dataclass(frozen=True)
+class PinholeCalibration:
+    d: tuple[float, ...]
+    k: tuple[float, ...]
+    r: tuple[float, ...]
+    p: tuple[float, ...]
+
+
+def centered_pinhole_calibration(
+    width: int,
+    height: int,
+    vertical_fov_degrees: float,
+) -> PinholeCalibration:
+    width = int(width)
+    height = int(height)
+    vertical_fov_degrees = float(vertical_fov_degrees)
+    if width <= 0 or height <= 0:
+        raise ValueError(
+            f"camera calibration requires positive resolution, got {width}x{height}"
+        )
+    if (
+        not math.isfinite(vertical_fov_degrees)
+        or vertical_fov_degrees <= 0.0
+        or vertical_fov_degrees >= 180.0
+    ):
+        raise ValueError(
+            "camera calibration requires vertical FOV in (0, 180) degrees, "
+            f"got {vertical_fov_degrees}"
+        )
+
+    fy = (height / 2.0) / math.tan(math.radians(vertical_fov_degrees) / 2.0)
+    fx = fy
+    cx = (width - 1.0) / 2.0
+    cy = (height - 1.0) / 2.0
+    return PinholeCalibration(
+        d=(0.0, 0.0, 0.0, 0.0, 0.0),
+        k=(fx, 0.0, cx, 0.0, fy, cy, 0.0, 0.0, 1.0),
+        r=(1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0),
+        p=(fx, 0.0, cx, 0.0, 0.0, fy, cy, 0.0, 0.0, 0.0, 1.0, 0.0),
+    )
+
+
+@dataclass
+class _Ros2CameraMetricWindow:
+    started_at: float
+    loops: int = 0
+    published: int = 0
+    duplicate: int = 0
+    bytes: int = 0
+    build_s: float = 0.0
+    publish_s: float = 0.0
+    by_camera: dict[str, int] = field(default_factory=dict)
+
+    def reset(self, now: float) -> None:
+        self.started_at = float(now)
+        self.loops = 0
+        self.published = 0
+        self.duplicate = 0
+        self.bytes = 0
+        self.build_s = 0.0
+        self.publish_s = 0.0
+        self.by_camera.clear()
 
 
 def _load_ros2() -> tuple[Any, Ros2MessageTypes]:
@@ -33,7 +99,7 @@ def _load_ros2() -> tuple[Any, Ros2MessageTypes]:
     from geometry_msgs.msg import Twist
     from nav_msgs.msg import Odometry
     from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy, QoSProfile, QoSReliabilityPolicy
-    from sensor_msgs.msg import CameraInfo, Image, JointState
+    from sensor_msgs.msg import CameraInfo, CompressedImage, Image, JointState
     from std_msgs.msg import Float64MultiArray
 
     camera_qos = QoSProfile(
@@ -49,6 +115,7 @@ def _load_ros2() -> tuple[Any, Ros2MessageTypes]:
         Odometry=Odometry,
         Float64MultiArray=Float64MultiArray,
         Image=Image,
+        CompressedImage=CompressedImage,
         CameraInfo=CameraInfo,
         CameraQoS=camera_qos,
     )
@@ -65,10 +132,14 @@ class Ros2Gateway:
         publish_state: bool = False,
         publish_sensors: bool = False,
         publish_cameras: bool = False,
+        publish_compressed_cameras: bool = False,
         state_hz: float | None = None,
         camera_fps: float | None = None,
+        camera_jpeg_quality: int = 80,
+        camera_log_interval_s: float | None = 2.0,
         camera_streams: Mapping[str, Any] | None = None,
         ros2_loader: Callable[[], tuple[Any, Any]] = _load_ros2,
+        camera_encoder: Callable[..., bytes] = encode_camera_jpeg,
         thread_factory: Callable[..., Any] = threading.Thread,
         camera_thread_factory: Callable[..., Any] = threading.Thread,
         monotonic: Callable[[], float] = time.monotonic,
@@ -81,14 +152,26 @@ class Ros2Gateway:
         self.publish_state = bool(publish_state)
         self.publish_sensors = bool(publish_sensors)
         self.publish_cameras = bool(publish_cameras)
+        self.publish_compressed_cameras = bool(publish_compressed_cameras)
         self.state_hz = float(state_hz) if state_hz is not None else None
         if self.state_hz is not None and self.state_hz <= 0.0:
             raise ValueError("ROS2 state rate must be greater than zero")
         self.camera_fps = float(camera_fps) if camera_fps is not None else 20.0
         if self.camera_fps <= 0.0:
             raise ValueError("ROS2 camera FPS must be greater than zero")
+        self.camera_jpeg_quality = int(camera_jpeg_quality)
+        if self.camera_jpeg_quality < 1 or self.camera_jpeg_quality > 100:
+            raise ValueError("ROS2 camera JPEG quality must be between 1 and 100")
+        self.camera_log_interval_s = (
+            float(camera_log_interval_s)
+            if camera_log_interval_s is not None
+            else 0.0
+        )
+        if self.camera_log_interval_s < 0.0:
+            raise ValueError("ROS2 camera log interval must not be negative")
         self.camera_streams = dict(camera_streams or {})
         self._ros2_loader = ros2_loader
+        self._camera_encoder = camera_encoder
         self._thread_factory = thread_factory
         self._camera_thread_factory = camera_thread_factory
         self._monotonic = monotonic
@@ -105,11 +188,14 @@ class Ros2Gateway:
         self._publishers: dict[tuple[Any, str], Any] = {}
         self._last_state_publish_at: float | None = None
         self._camera_source_keys: dict[tuple[str, str], tuple[int, int]] = {}
+        self._camera_metrics = _Ros2CameraMetricWindow(started_at=self._monotonic())
         self._seen_commands: set[str] = set()
 
     def start(self) -> None:
         if self._node is not None:
             return
+        if (self.publish_cameras or self.publish_compressed_cameras) and self.camera_streams:
+            self._validate_camera_calibrations()
         try:
             rclpy, message_types = self._ros2_loader()
         except ImportError as exc:
@@ -144,8 +230,9 @@ class Ros2Gateway:
         spin_target = self._make_spin_target(rclpy, self._node)
         self._thread = self._thread_factory(target=spin_target, daemon=True)
         self._thread.start()
-        if self.publish_cameras and self.camera_streams:
+        if (self.publish_cameras or self.publish_compressed_cameras) and self.camera_streams:
             self._camera_stop_event.clear()
+            self._camera_metrics.reset(self._monotonic())
             self._camera_thread = self._camera_thread_factory(
                 target=self._run_camera_publisher,
                 daemon=True,
@@ -202,8 +289,13 @@ class Ros2Gateway:
                 self._publish_sensors(articulation, art)
 
     def publish_camera_frames_once(self) -> int:
-        if self._node is None or self._types is None or not self.publish_cameras:
+        if (
+            self._node is None
+            or self._types is None
+            or not (self.publish_cameras or self.publish_compressed_cameras)
+        ):
             return 0
+        self._camera_metrics.loops += 1
         stamp = self._stamp()
         published = 0
         for articulation, robot_cameras in self.camera_streams.items():
@@ -218,13 +310,31 @@ class Ros2Gateway:
                 source_key = (int(getattr(view, "frame_count", 0)), id(frame))
                 camera_key = (str(articulation), str(camera_name))
                 if self._camera_source_keys.get(camera_key) == source_key:
+                    self._camera_metrics.duplicate += 1
                     continue
-                image = self._build_image_message(
-                    articulation=str(articulation),
-                    camera_name=str(camera_name),
-                    view=view,
-                    frame=np.asarray(frame),
-                    stamp=stamp,
+                build_started = self._monotonic()
+                frame_array = np.asarray(frame)
+                image = (
+                    self._build_image_message(
+                        articulation=str(articulation),
+                        camera_name=str(camera_name),
+                        view=view,
+                        frame=frame_array,
+                        stamp=stamp,
+                    )
+                    if self.publish_cameras
+                    else None
+                )
+                compressed = (
+                    self._build_compressed_image_message(
+                        articulation=str(articulation),
+                        camera_name=str(camera_name),
+                        view=view,
+                        frame=frame_array,
+                        stamp=stamp,
+                    )
+                    if self.publish_compressed_cameras
+                    else None
                 )
                 camera_info = self._build_camera_info_message(
                     articulation=str(articulation),
@@ -232,14 +342,32 @@ class Ros2Gateway:
                     view=view,
                     stamp=stamp,
                 )
+                build_s = max(0.0, self._monotonic() - build_started)
                 base = f"/{articulation}/camera/{camera_name}"
                 camera_qos = self._camera_qos()
-                self._publisher(f"{base}/image_raw", self._require_type("Image"), qos=camera_qos).publish(image)
-                self._publisher(f"{base}/camera_info", self._require_type("CameraInfo"), qos=camera_qos).publish(
-                    camera_info
-                )
+                publish_started = self._monotonic()
+                if image is not None:
+                    self._publisher(
+                        f"{base}/image_raw",
+                        self._require_type("Image"),
+                        qos=camera_qos,
+                    ).publish(image)
+                if compressed is not None:
+                    self._publisher(
+                        f"{base}/image_raw/compressed",
+                        self._require_type("CompressedImage"),
+                        qos=camera_qos,
+                    ).publish(compressed)
+                self._publisher(
+                    f"{base}/camera_info",
+                    self._require_type("CameraInfo"),
+                    qos=camera_qos,
+                ).publish(camera_info)
+                publish_s = max(0.0, self._monotonic() - publish_started)
                 self._camera_source_keys[camera_key] = source_key
+                self._record_camera_publish(camera_key, image, compressed, build_s, publish_s)
                 published += 1
+        self._maybe_log_camera_metrics()
         return published
 
     def _make_twist_callback(self, articulation: str, port: Any) -> Callable[[Any], None]:
@@ -320,7 +448,10 @@ class Ros2Gateway:
         msg.header.frame_id = f"{articulation}/{camera_name}_optical_frame"
         mode_name = str(getattr(getattr(view, "mode", "real"), "value", getattr(view, "mode", "real"))).lower()
         if mode_name == "real":
-            pixels = linear_rgb_to_srgb_u8(frame)
+            pixels = real_rgba_to_display_rgb_u8(
+                frame,
+                payload_encoding=str(getattr(view, "payload_encoding", "bgra8_linear")),
+            )
             msg.height = int(pixels.shape[0])
             msg.width = int(pixels.shape[1])
             msg.encoding = "rgb8"
@@ -355,6 +486,31 @@ class Ros2Gateway:
         msg.data = np.ascontiguousarray(pixels, dtype=np.uint8).tobytes()
         return msg
 
+    def _build_compressed_image_message(
+        self,
+        *,
+        articulation: str,
+        camera_name: str,
+        view: Any,
+        frame: np.ndarray,
+        stamp: Any,
+    ) -> Any:
+        msg = self._require_type("CompressedImage")()
+        msg.header.stamp = stamp
+        msg.header.frame_id = f"{articulation}/{camera_name}_optical_frame"
+        msg.format = "jpeg"
+        msg.data = bytes(
+            self._camera_encoder(
+                frame,
+                self.camera_jpeg_quality,
+                mode=getattr(view, "mode", "real"),
+                payload_encoding=str(getattr(view, "payload_encoding", "bgra8_linear")),
+                depth_near_cm=float(getattr(view, "depth_near_cm", 10.0)),
+                depth_far_cm=float(getattr(view, "depth_far_cm", 10000.0)),
+            )
+        )
+        return msg
+
     def _build_camera_info_message(
         self,
         *,
@@ -367,9 +523,37 @@ class Ros2Gateway:
         msg.header.stamp = stamp
         msg.header.frame_id = f"{articulation}/{camera_name}_optical_frame"
         width, height = getattr(view, "resolution", (0, 0))
+        calibration = centered_pinhole_calibration(
+            int(width),
+            int(height),
+            float(getattr(view, "fovy", 0.0)),
+        )
         msg.width = int(width)
         msg.height = int(height)
+        msg.distortion_model = "plumb_bob"
+        msg.d = list(calibration.d)
+        msg.k = list(calibration.k)
+        msg.r = list(calibration.r)
+        msg.p = list(calibration.p)
         return msg
+
+    def _validate_camera_calibrations(self) -> None:
+        for articulation, robot_cameras in self.camera_streams.items():
+            for camera_name, stream in getattr(robot_cameras, "streams", {}).items():
+                view = getattr(stream, "view", None)
+                if view is None:
+                    continue
+                width, height = getattr(view, "resolution", (0, 0))
+                try:
+                    centered_pinhole_calibration(
+                        int(width),
+                        int(height),
+                        float(getattr(view, "fovy", 0.0)),
+                    )
+                except ValueError as exc:
+                    raise ValueError(
+                        f"invalid camera calibration for {articulation}:{camera_name}: {exc}"
+                    ) from exc
 
     def _run_camera_publisher(self) -> None:
         interval_s = 1.0 / self.camera_fps
@@ -397,6 +581,55 @@ class Ros2Gateway:
         if self._types is None:
             return 1
         return getattr(self._types, "CameraQoS", None) or 1
+
+    def _record_camera_publish(
+        self,
+        camera_key: tuple[str, str],
+        image: Any | None,
+        compressed: Any | None,
+        build_s: float,
+        publish_s: float,
+    ) -> None:
+        metrics = self._camera_metrics
+        metrics.published += 1
+        metrics.bytes += len(getattr(image, "data", b"") or b"")
+        metrics.bytes += len(getattr(compressed, "data", b"") or b"")
+        metrics.build_s += float(build_s)
+        metrics.publish_s += float(publish_s)
+        name = f"{camera_key[0]}/{camera_key[1]}"
+        metrics.by_camera[name] = metrics.by_camera.get(name, 0) + 1
+
+    def _maybe_log_camera_metrics(self) -> None:
+        interval_s = self.camera_log_interval_s
+        if interval_s <= 0.0:
+            return
+        now = self._monotonic()
+        metrics = self._camera_metrics
+        elapsed_s = max(0.0, now - metrics.started_at)
+        if elapsed_s < interval_s:
+            return
+        published = max(1, metrics.published)
+        camera_summary = ",".join(
+            f"{name}:{count}"
+            for name, count in sorted(metrics.by_camera.items())
+        ) or "none"
+        self._logger.info(
+            "ROS2 camera metrics: published_fps=%.3f mb_s=%.3f loops=%d "
+            "published=%d duplicate=%d build_ms=%.3f publish_ms=%.3f "
+            "bytes_per_frame=%.0f cameras=%s",
+            metrics.published / elapsed_s if elapsed_s > 0.0 else 0.0,
+            (metrics.bytes / (1024.0 * 1024.0)) / elapsed_s
+            if elapsed_s > 0.0
+            else 0.0,
+            metrics.loops,
+            metrics.published,
+            metrics.duplicate,
+            (metrics.build_s / published) * 1000.0,
+            (metrics.publish_s / published) * 1000.0,
+            metrics.bytes / published,
+            camera_summary,
+        )
+        metrics.reset(now)
 
     def _require_type(self, name: str) -> Any:
         if self._types is None:

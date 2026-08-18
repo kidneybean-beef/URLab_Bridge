@@ -96,12 +96,16 @@ class URLabControlServer:
             ros2_publish_state = bool(getattr(self.args, "ros2_publish_state", False))
             ros2_publish_sensors = bool(getattr(self.args, "ros2_publish_sensors", False))
             ros2_publish_cameras = bool(getattr(self.args, "ros2_publish_cameras", False))
+            ros2_publish_compressed_cameras = bool(
+                getattr(self.args, "ros2_publish_compressed_cameras", False)
+            )
             ros2_enabled = any(
                 (
                     ros2_cmd_vel,
                     ros2_publish_state,
                     ros2_publish_sensors,
                     ros2_publish_cameras,
+                    ros2_publish_compressed_cameras,
                 )
             )
             if ros2_enabled:
@@ -112,10 +116,20 @@ class URLabControlServer:
                     publish_state=ros2_publish_state,
                     publish_sensors=ros2_publish_sensors,
                     publish_cameras=ros2_publish_cameras,
+                    publish_compressed_cameras=ros2_publish_compressed_cameras,
                     state_hz=getattr(self.args, "ros2_state_hz", None),
                     camera_fps=(
                         getattr(self.args, "ros2_camera_fps", None)
                         or self.camera_fps
+                    ),
+                    camera_jpeg_quality=(
+                        getattr(self.args, "ros2_camera_jpeg_quality", None)
+                        or self.camera_jpeg_quality
+                    ),
+                    camera_log_interval_s=getattr(
+                        self.args,
+                        "ros2_camera_log_interval_s",
+                        2.0,
                     ),
                     camera_streams=camera_streams,
                     node_name=getattr(

@@ -151,6 +151,15 @@ _CAMERA_DTYPE_BY_MODE = {
     CameraMode.INSTANCE: np.uint8,
 }
 
+_CAMERA_PAYLOAD_ENCODING_BY_MODE = {
+    # Plugins before the display-ready RGB update did not advertise a payload
+    # encoding. Keep that handshake fallback explicitly legacy-compatible.
+    CameraMode.REAL: "bgra8_linear",
+    CameraMode.DEPTH: "float32_cm",
+    CameraMode.SEMANTIC: "bgra8",
+    CameraMode.INSTANCE: "bgra8",
+}
+
 
 @dataclass
 class URLabCameraView:
@@ -160,8 +169,10 @@ class URLabCameraView:
     `latest_frame` is None until the first frame arrives (streaming mode)
     or until the first `step(include_cameras=True)` reply populates it.
     Shape depends on mode: `(H, W, 4)` for real / semantic / instance and
-    `(H, W)` for depth. Real frames are decoded to RGBA; segmentation frames
-    remain in URLab's ID-preserving BGRA wire order.
+    `(H, W)` for depth. Real frames are decoded to RGBA; their
+    ``payload_encoding`` records whether the original BGRA bytes were legacy
+    linear samples or display-ready sRGB. Segmentation frames remain in
+    URLab's ID-preserving BGRA wire order.
     """
 
     name: str
@@ -173,6 +184,9 @@ class URLabCameraView:
     owner: Optional[str] = None
     enabled: bool = True
     dtype: np.dtype = field(default_factory=lambda: np.dtype(np.uint8))
+    # Wire contract advertised by hello / describe_runtime. `latest_frame`
+    # itself is RGBA for Real cameras after the client-side BGRA swizzle.
+    payload_encoding: str = "bgra8_linear"
     latest_frame: Optional[np.ndarray] = None
     sim_time: Optional[float] = None
     frame_count: int = 0
@@ -214,6 +228,10 @@ class URLabCameraView:
             owner=owner,
             enabled=bool(payload.get("enabled", True)),
             dtype=dtype,
+            payload_encoding=str(
+                payload.get("payload_encoding")
+                or _CAMERA_PAYLOAD_ENCODING_BY_MODE.get(mode, "bgra8")
+            ),
         )
         # Stash the per-camera ZMQ endpoint + topic from the handshake so
         # the streaming SUB threads can subscribe in free-running mode.

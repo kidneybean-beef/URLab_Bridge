@@ -186,10 +186,30 @@ def build_arg_parser() -> argparse.ArgumentParser:
         help="publish URLab camera frames for configured --web-camera articulations",
     )
     ros2.add_argument(
+        "--ros2-publish-compressed-cameras",
+        action="store_true",
+        help=(
+            "publish JPEG sensor_msgs/CompressedImage preview topics at "
+            "/<articulation>/camera/<camera>/image_raw/compressed"
+        ),
+    )
+    ros2.add_argument(
         "--ros2-camera-fps",
         type=_positive_float,
         default=None,
         help="optional ROS2 raw camera publish rate; default follows --camera-fps",
+    )
+    ros2.add_argument(
+        "--ros2-camera-jpeg-quality",
+        type=_jpeg_quality,
+        default=None,
+        help="ROS2 compressed camera JPEG quality from 1 to 100; default follows --camera-jpeg-quality",
+    )
+    ros2.add_argument(
+        "--ros2-camera-log-interval-s",
+        type=float,
+        default=2.0,
+        help="seconds between ROS2 raw camera publish metric logs; 0 disables",
     )
     ros2.add_argument(
         "--ros2-node-name",
