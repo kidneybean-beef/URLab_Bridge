@@ -1,0 +1,26 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>urlab_image_transport_relay</name>
+  <version>0.1.0</version>
+  <description>Relay URLab raw ROS2 Image topics through the standard image_transport publisher stack.</description>
+  <maintainer email="urlab@example.invalid">URLab Bridge Developers</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>pkg-config</depend>
+  <depend>rclcpp</depend>
+  <depend>rmw</depend>
+  <depend>sensor_msgs</depend>
+  <depend>image_transport</depend>
+  <depend>msgpack-cxx</depend>
+  <depend>libzmq3-dev</depend>
+
+  <exec_depend>image_transport_plugins</exec_depend>
+
+  <test_depend>ament_cmake_gtest</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>
